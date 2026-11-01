@@ -1,0 +1,38 @@
+COMPILAR LA VERSIÓN PYTHON
+==========================
+
+Requisitos: Python 3.10+, Visual Studio con herramientas de C++ y reportlab.
+  py -m pip install reportlab pyinstaller
+
+
+1) Núcleo nativo (auditor_core.exe)
+------------------------------------
+Abre "x64 Native Tools Command Prompt for VS" y, en esta carpeta:
+
+  rc /nologo /fo auditor_core.res auditor_core.rc
+  cl /O2 /EHsc /utf-8 auditor_core.cpp auditor_core.res /link /SUBSYSTEM:CONSOLE winhttp.lib
+
+El .rc incrusta icono, versión y copyright en las propiedades del .exe.
+
+
+2) Interfaz (auditor.exe)
+-------------------------
+  py -m PyInstaller --noconfirm --onefile --noconsole --icon escudo.ico --version-file version_info.txt auditor.py
+
+También se puede usar el archivo de especificaciones:
+
+  py -m PyInstaller --noconfirm auditor.spec
+
+
+3) Distribución
+---------------
+  auditor.exe + auditor_core.exe + escudo.ico  en la misma carpeta.
+
+El historial (historial_auditorias.json) y su copia (.bak.json) se crean junto
+al ejecutable y NO se versionan (están en .gitignore).
+
+
+4) Pruebas
+----------
+  python tests_auditor.py            (servidor local propio, sin Internet)
+  python tests_auditor.py --online   (incluye una auditoría real)

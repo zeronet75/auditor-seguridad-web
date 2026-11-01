@@ -1,0 +1,43 @@
+COMPILAR LA VERSIÓN NATIVA (C++)
+================================
+
+Requisitos: Visual Studio con herramientas de C++ (MSVC + Windows SDK).
+Solo se usan APIs de Windows (WinHTTP, GDI, Common Controls); no hay
+dependencias externas.
+
+
+1) Recursos (icono, versión y copyright)
+----------------------------------------
+Abre "x64 Native Tools Command Prompt for VS" y, en esta carpeta:
+
+  rc /nologo /fo auditor.res auditor.rc
+
+
+2) Compilación
+--------------
+  cl /O2 /EHsc /utf-8 /std:c++17 auditor.cpp auditor.res /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib comctl32.lib winhttp.lib comdlg32.lib shell32.lib
+
+Se genera auditor.exe (un solo archivo, sin consola).
+
+
+3) Pruebas
+----------
+  python tests_auditor_nativo.py
+
+Levanta un servidor HTTP local, ejecuta el binario en modo consola y valida el
+contrato JSON, las redirecciones, los errores, la puntuación y el análisis
+desde la interfaz.
+
+
+4) Modo consola (automatización)
+--------------------------------
+  auditor.exe --json https://ejemplo.com
+  auditor.exe --pdf  https://ejemplo.com informe.pdf
+
+Devuelve 0 si el análisis fue correcto y 2 si hubo un error controlado.
+
+
+5) Exportación a PDF
+--------------------
+Usa la impresora virtual "Microsoft Print to PDF" incluida en Windows.
+El historial se guarda junto al ejecutable y NO se versiona.
