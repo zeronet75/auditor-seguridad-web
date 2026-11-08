@@ -101,17 +101,14 @@ Traducido en los 16 idiomas:
 - Historial (columnas, botones y confirmaciones).
 - Diálogos de error, lotes y exportación.
 - «Acerca de» y cabeceras del PDF/CSV.
-
-Pendiente de revisión nativa (de momento muestran el texto inglés, que es el
-fallback):
-
-- Descripciones largas de cada comprobación (`check.*.desc`).
+- Descripciones largas de cada comprobación (`check.*.desc`) y sus nombres.
 - Avisos de configuración débil (`aviso.*`).
-- Valores de transporte (`value.*`), salvo en español e inglés.
-- Texto de la nota al pie del PDF y algunos mensajes secundarios.
+- Valores de transporte y diagnóstico (`value.*`).
+- Nota al pie del PDF, errores de red y mensajes secundarios.
 
-Para completarlos, copia el texto inglés de `en_US.json` y sustitúyelo en el
-archivo del idioma: no hay que tocar el código.
+Las únicas cadenas que coinciden con `en_US.json` son las que no deben
+traducirse: nombres de cabeceras HTTP, siglas, `HTTPS` y el prefijo
+`| TLS: {protocol}`.
 
 ## Pruebas
 
