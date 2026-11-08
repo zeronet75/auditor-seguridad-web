@@ -241,6 +241,82 @@ def probar_gui():
     comprobar(True, "cierre de la aplicación")
 
 
+def probar_idiomas_nativo():
+    print("\n[5] Menú Idioma y cambio en caliente")
+    import ctypes
+    import shutil
+    from ctypes import wintypes
+
+    carpeta = tempfile.mkdtemp()
+    copia = os.path.join(carpeta, "auditor.exe")
+    shutil.copy2(EJECUTABLE, copia)
+    origen_loc = os.path.join(BASE_DIR, "localizations")
+    if os.path.isdir(origen_loc):
+        shutil.copytree(origen_loc, os.path.join(carpeta, "localizations"))
+
+    user32 = ctypes.windll.user32
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.GetMenu.restype = wintypes.HMENU
+    user32.GetMenu.argtypes = [wintypes.HWND]
+    user32.GetSubMenu.restype = wintypes.HMENU
+    user32.GetSubMenu.argtypes = [wintypes.HMENU, ctypes.c_int]
+    user32.GetMenuItemCount.argtypes = [wintypes.HMENU]
+    user32.GetMenuStringW.argtypes = [wintypes.HMENU, wintypes.UINT, wintypes.LPWSTR, ctypes.c_int, wintypes.UINT]
+    user32.GetDlgItem.restype = wintypes.HWND
+    user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+
+    def texto(handle):
+        buffer = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(handle, buffer, 256)
+        return buffer.value
+
+    proceso = subprocess.Popen([copia, "https://github.com/"], cwd=carpeta)
+    time.sleep(6)
+    hwnd = user32.FindWindowW("AuditorSeguridadMainWndClass", None)
+    comprobar(bool(hwnd), "la aplicación arranca")
+
+    if hwnd:
+        menu = user32.GetSubMenu(user32.GetMenu(hwnd), 0)
+        total = user32.GetMenuItemCount(menu)
+        comprobar(total == 16, "16 idiomas en el menú ({})".format(total))
+
+        nombres = []
+        for i in range(total):
+            buffer = ctypes.create_unicode_buffer(128)
+            user32.GetMenuStringW(menu, i, buffer, 128, 0x400)
+            nombres.append(buffer.value)
+        comprobar("Español" in nombres and "日本語" in nombres, "nombres nativos en el menú")
+
+        indice_ja = nombres.index("日本語")
+        user32.PostMessageW(hwnd, 0x0111, 2000 + indice_ja, 0)
+        time.sleep(2)
+        comprobar(texto(user32.GetDlgItem(hwnd, 1002)) == "🔍 サイトを分析", "cambio en caliente a japonés")
+
+        ruta_ajustes = os.path.join(os.environ.get("APPDATA", ""), "AuditorSeguridadWeb", "settings.json")
+        guardado = None
+        if os.path.exists(ruta_ajustes):
+            try:
+                with open(ruta_ajustes, encoding="utf-8") as f:
+                    guardado = json.load(f).get("Language")
+            except Exception:
+                guardado = None
+        comprobar(guardado == "ja_JP", "la selección se guarda ({})".format(guardado))
+
+        indice_es = nombres.index("Español")
+        user32.PostMessageW(hwnd, 0x0111, 2000 + indice_es, 0)
+        time.sleep(2)
+        comprobar(texto(user32.GetDlgItem(hwnd, 1002)) == "🔍 Analizar Web", "vuelta a español")
+
+        user32.PostMessageW(hwnd, 0x0010, 0, 0)
+        time.sleep(2)
+
+    if proceso.poll() is None:
+        proceso.kill()
+
+
 def main():
     print("=" * 60)
     print(" PRUEBAS DEL AUDITOR NATIVO (C++)")
@@ -261,6 +337,7 @@ def main():
 
     probar_online()
     probar_gui()
+    probar_idiomas_nativo()
 
     print("\n" + "=" * 60)
     if FALLOS:

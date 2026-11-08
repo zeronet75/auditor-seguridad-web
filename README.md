@@ -32,6 +32,22 @@ Copyright (c) 2026 Juan Ramon Martin — <zeronet75@gmail.com>
 - **Modo consola** en la versión nativa para automatizar:
   `auditor.exe --json <url>` y `auditor.exe --pdf <url> <salida.pdf>`.
 
+## Idiomas
+
+La interfaz y los informes están disponibles en **16 idiomas** con un archivo
+JSON por idioma en `localizations/`:
+
+`en_US` (base), `ar_AR`, `de_DE`, `es_ES`, `fr_FR`, `hi_IN`, `id_ID`, `it_IT`,
+`ja_JP`, `ko_KR`, `pt_BR`, `ru_RU`, `tr_TR`, `vi_VN`, `zh_CN` y `zh_TW`.
+
+- Menú **Idioma / Language** con el nombre nativo y marca de verificación.
+- Cambio **en caliente** (sin reiniciar) en las dos versiones.
+- La elección se guarda en `%APPDATA%\AuditorSeguridadWeb\settings.json`.
+- Fallback: idioma actual → inglés → clave.
+- Para añadir un idioma basta con copiar un JSON de `localizations/` y cambiar
+  el código y el nombre nativo. Instrucciones en
+  [`localizations/README.md`](python/localizations/README.md).
+
 ## Estructura
 
 ```

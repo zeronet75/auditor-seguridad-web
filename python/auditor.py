@@ -34,6 +34,9 @@ from tkinter import ttk, messagebox, filedialog
 from urllib.parse import urlsplit, urlunsplit, quote
 from xml.sax.saxutils import escape as escapar_xml
 
+import i18n
+from i18n import T, T_or
+
 # ReportLab solo es necesario para exportar a PDF: si falta, el resto sigue funcionando.
 try:
     from reportlab.lib.pagesizes import letter
@@ -67,7 +70,7 @@ NOMBRE_CORE = "auditor_core.exe"
 # Datos de autoría (se muestran en la interfaz y en los informes exportados).
 AUTOR = "Juan Ramon Martin"
 CORREO = "zeronet75@gmail.com"
-VERSION_APP = "4.0"
+VERSION_APP = "4.1"
 COPYRIGHT = "© 2026 Juan Ramon Martin"
 
 # Pesos de respaldo para registros antiguos, que no guardaban el campo "peso".
@@ -215,17 +218,61 @@ def nota_desde_porcentaje(porcentaje):
 def estado_item(item):
     """Devuelve (texto_estado, color, icono) para dibujar la tarjeta de una comprobación."""
     if not item.get("aplicable", True):
-        return "NO APLICA", "#6c757d", "○"
+        return T("state.not_applicable"), "#6c757d", "○"
     if peso_item(item) <= 0:
         if item.get("presente"):
-            return "INFORMATIVA · CONFIGURADA", "#0d6efd", "ℹ"
-        return "INFORMATIVA · NO CONFIGURADA", "#6c757d", "○"
+            return T("state.info_on"), "#0d6efd", "ℹ"
+        return T("state.info_off"), "#6c757d", "○"
     if not item.get("presente"):
         # Las comprobaciones de transporte (sin cabecera HTTP asociada) no "faltan": no se cumplen.
-        return ("NO CUMPLE" if not item.get("header") else "AUSENTE"), "#dc3545", "☒"
+        return (T("state.failed") if not item.get("header") else T("state.missing")), "#dc3545", "☒"
     if calidad_item(item) < 100:
-        return "DÉBIL", "#fd7e14", "⚠"
-    return "CONFIGURADA", "#0a8042", "☑"
+        return T("state.weak"), "#fd7e14", "⚠"
+    return T("state.configured"), "#0a8042", "☑"
+
+
+def crit_item(item):
+    """Criticidad traducida a partir del texto que envía el núcleo."""
+    criticidad = str(item.get("criticidad", "")).upper()
+    clave = {
+        "CRÍTICA": "crit.critical", "CRITICA": "crit.critical",
+        "ALTA": "crit.high", "MEDIA": "crit.medium",
+        "BAJA": "crit.low", "INFORMATIVA": "crit.info",
+    }.get(criticidad)
+    return T(clave) if clave else item.get("criticidad", "-")
+
+
+def nombre_item(item):
+    """Nombre de la comprobación (traducido por id, con el texto del núcleo como respaldo)."""
+    clave = "check.{}.name".format(item.get("id", ""))
+    return T_or(clave, item.get("nombre", ""))
+
+
+def desc_item(item):
+    """Descripción de la comprobación (traducida por id, con el texto del núcleo como respaldo)."""
+    clave = "check.{}.desc".format(item.get("id", ""))
+    return T_or(clave, item.get("desc", ""))
+
+
+def aviso_item(item):
+    """Observación traducida; si el núcleo no manda clave se usa su texto."""
+    texto = item.get("aviso") or ""
+    clave = item.get("aviso_clave") or ""
+    if not clave:
+        return texto
+    return T_or("aviso." + clave, texto)
+
+
+def valor_item(item):
+    """Valor traducido cuando el núcleo manda clave y argumentos (transporte)."""
+    texto = item.get("valor", "")
+    clave = item.get("valor_clave") or ""
+    if not clave:
+        return texto
+    args = item.get("valor_args") or {}
+    if not isinstance(args, dict):
+        args = {}
+    return T_or(clave, texto, **args)
 
 
 class AuditorSeguridadGUI:
@@ -233,7 +280,9 @@ class AuditorSeguridadGUI:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Auditor Profesional de Seguridad HTTP")
+        if not i18n.is_initialized():
+            i18n.initialize(i18n.load_saved_language())
+        self.root.title(T("app.title"))
         self.root.geometry("1020x780")
         self.root.minsize(900, 680)
 
@@ -282,15 +331,17 @@ class AuditorSeguridadGUI:
         self.style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1)
 
     def crear_interfaz(self):
-        """Construye la estructura general de la ventana (Cabecera, Formulario URL, Pestañas principales)."""
+        """Construye la estructura general de la ventana (Menú, Cabecera, Formulario URL, Pestañas principales)."""
+        self.construir_barra_menu()
+
         # --- Cabecera superior institucional ---
         header_frame = ttk.Frame(self.root, style="Header.TFrame")
         header_frame.pack(fill=tk.X, ipadx=10, ipady=12)
 
-        lbl_titulo = ttk.Label(header_frame, text=ico("🛡️ ", "") + "Auditor de Cabeceras y Seguridad Web", style="Title.TLabel")
-        lbl_titulo.pack(anchor="w", padx=20)
-        lbl_subtitulo = ttk.Label(header_frame, text="Análisis avanzado de vulnerabilidades HTTP y diagnóstico OWASP", style="Subtitle.TLabel")
-        lbl_subtitulo.pack(anchor="w", padx=20)
+        self.lbl_titulo = ttk.Label(header_frame, text=ico("🛡️ ", "") + T("app.title"), style="Title.TLabel")
+        self.lbl_titulo.pack(anchor="w", padx=20)
+        self.lbl_subtitulo = ttk.Label(header_frame, text=T("app.subtitle"), style="Subtitle.TLabel")
+        self.lbl_subtitulo.pack(anchor="w", padx=20)
 
         # Copyright del autor: visible en la cabecera y con acceso a "Acerca de".
         self.lbl_copyright = ttk.Label(header_frame, text="{} · {}".format(COPYRIGHT, CORREO),
@@ -299,48 +350,113 @@ class AuditorSeguridadGUI:
         self.lbl_copyright.bind("<Button-1>", lambda e: self.acerca_de())
 
         # --- Panel de Entrada / Formulario URL ---
-        input_frame = ttk.LabelFrame(self.root, text=" Formulario de Análisis ", padding=12)
-        input_frame.pack(fill=tk.X, padx=20, pady=12)
+        self.input_frame = ttk.LabelFrame(self.root, text=" {} ".format(T("form.title")), padding=12)
+        self.input_frame.pack(fill=tk.X, padx=20, pady=12)
 
-        ttk.Label(input_frame, text="Dirección URL de la web:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.lbl_url = ttk.Label(self.input_frame, text=T("form.url"))
+        self.lbl_url.grid(row=0, column=0, sticky="w", padx=5, pady=5)
 
         # Obtiene las URLs recientes del historial para autocompletar el campo desplegable.
         urls_recientes = list(dict.fromkeys([item["url"] for item in self.historial if item.get("url")]))[:10]
 
         self.url_var = tk.StringVar(value=urls_recientes[0] if urls_recientes else "")
-        self.combo_url = ttk.Combobox(input_frame, textvariable=self.url_var, values=urls_recientes, font=("Segoe UI", 10))
+        self.combo_url = ttk.Combobox(self.input_frame, textvariable=self.url_var, values=urls_recientes, font=("Segoe UI", 10))
         self.combo_url.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
         self.combo_url.bind("<Return>", lambda e: self.iniciar_hilo_analisis())
-        input_frame.columnconfigure(1, weight=1)
+        self.input_frame.columnconfigure(1, weight=1)
 
         # Botones de acción principales (Analizar, Lotes, Exportar)
-        self.btn_analizar = ttk.Button(input_frame, text=ico("🔍 ", "") + "Analizar Web", command=self.iniciar_hilo_analisis, style="MainBtn.TButton")
+        self.btn_analizar = ttk.Button(self.input_frame, text=ico("🔍 ", "") + T("form.analyze"), command=self.iniciar_hilo_analisis, style="MainBtn.TButton")
         self.btn_analizar.grid(row=0, column=2, padx=5, pady=5)
 
-        self.btn_lotes = ttk.Button(input_frame, text=ico("📂 ", "") + "Lotes", command=self.auditoria_por_lotes)
+        self.btn_lotes = ttk.Button(self.input_frame, text=ico("📂 ", "") + T("form.batch"), command=self.auditoria_por_lotes)
         self.btn_lotes.grid(row=0, column=3, padx=5, pady=5)
 
-        self.btn_exportar = ttk.Button(input_frame, text=ico("💾 ", "") + "Exportar ▾", command=self.mostrar_menu_exportacion, state=tk.DISABLED)
+        self.btn_exportar = ttk.Button(self.input_frame, text=ico("💾 ", "") + T("form.export") + " ▾", command=self.mostrar_menu_exportacion, state=tk.DISABLED)
         self.btn_exportar.grid(row=0, column=4, padx=5, pady=5)
 
         # Menú contextual desplegable para las opciones de exportación (PDF, JSON, CSV)
         self.menu_exportar = tk.Menu(self.root, tearoff=0)
-        self.menu_exportar.add_command(label="Exportar como PDF", command=self.exportar_pdf)
-        self.menu_exportar.add_command(label="Exportar como JSON", command=self.exportar_json)
-        self.menu_exportar.add_command(label="Exportar como CSV", command=self.exportar_csv)
+        self.rellenar_menu_exportar()
 
         # --- Contenedor de Pestañas (Notebook) ---
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 15))
 
         self.tab_informe = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_informe, text=ico("📊 ", "") + "Informe del Análisis")
+        self.notebook.add(self.tab_informe, text=ico("📊 ", "") + T("tab.report"))
 
         self.tab_historial = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_historial, text=ico("📜 ", "") + "Historial de Registros")
+        self.notebook.add(self.tab_historial, text=ico("📜 ", "") + T("tab.history"))
 
         self.construir_tab_informe()
         self.construir_tab_historial()
+
+    def construir_barra_menu(self):
+        """Barra de menús: Idioma (16 idiomas) y Ayuda."""
+        self.barra_menu = tk.Menu(self.root)
+
+        self.idioma_var = tk.StringVar(value=i18n.current())
+        self.menu_idioma = tk.Menu(self.barra_menu, tearoff=0)
+        for codigo, nombre in i18n.available():
+            self.menu_idioma.add_radiobutton(
+                label=nombre, value=codigo, variable=self.idioma_var,
+                command=lambda c=codigo: self.cambiar_idioma(c))
+        self.barra_menu.add_cascade(label=T("menu.language"), menu=self.menu_idioma)
+
+        self.menu_ayuda = tk.Menu(self.barra_menu, tearoff=0)
+        self.menu_ayuda.add_command(label=T("menu.help.about"), command=self.acerca_de)
+        self.barra_menu.add_cascade(label=T("menu.help"), menu=self.menu_ayuda)
+
+        self.root.config(menu=self.barra_menu)
+
+    def rellenar_menu_exportar(self):
+        """(Re)escribe las opciones del menú de exportación en el idioma activo."""
+        self.menu_exportar.delete(0, tk.END)
+        self.menu_exportar.add_command(label=T("form.export.pdf"), command=self.exportar_pdf)
+        self.menu_exportar.add_command(label=T("form.export.json"), command=self.exportar_json)
+        self.menu_exportar.add_command(label=T("form.export.csv"), command=self.exportar_csv)
+
+    def cambiar_idioma(self, codigo):
+        """Cambia el idioma en caliente y guarda la preferencia."""
+        i18n.set_language(codigo)
+        i18n.save_language(i18n.current())
+        self.idioma_var.set(i18n.current())
+        self.aplicar_idioma()
+
+    def aplicar_idioma(self):
+        """Reaplica todos los textos visibles sin reiniciar la aplicación."""
+        self.root.title(T("app.title"))
+        self.lbl_titulo.config(text=ico("🛡️ ", "") + T("app.title"))
+        self.lbl_subtitulo.config(text=T("app.subtitle"))
+        self.input_frame.config(text=" {} ".format(T("form.title")))
+        self.lbl_url.config(text=T("form.url"))
+        self.btn_analizar.config(text=(T("form.analyzing") if self.analizando else ico("🔍 ", "") + T("form.analyze")))
+        self.btn_lotes.config(text=ico("📂 ", "") + T("form.batch"))
+        self.btn_exportar.config(text=ico("💾 ", "") + T("form.export") + " ▾")
+        self.rellenar_menu_exportar()
+
+        self.barra_menu.entryconfig(0, label=T("menu.language"))
+        self.barra_menu.entryconfig(1, label=T("menu.help"))
+        self.menu_ayuda.entryconfig(0, label=T("menu.help.about"))
+
+        self.notebook.tab(0, text=ico("📊 ", "") + T("tab.report"))
+        self.notebook.tab(1, text=ico("📜 ", "") + T("tab.history"))
+
+        self.btn_borrar_item.config(text=ico("🗑️ ", "") + T("hist.delete"))
+        self.btn_limpiar_todo.config(text=ico("🧹 ", "") + T("hist.clear"))
+        self.btn_restaurar.config(text=ico("♻️ ", "") + T("hist.restore"))
+        self.tree_historial.heading("fecha", text=T("hist.date"))
+        self.tree_historial.heading("url", text=T("hist.url"))
+        self.tree_historial.heading("estado", text=T("hist.status"))
+        self.tree_historial.heading("calificacion", text=T("hist.grade"))
+        self.actualizar_tabla_historial()
+
+        if self.ultimo_resultado:
+            self.mostrar_informe_pantalla(self.ultimo_resultado)
+        else:
+            self.lbl_estado_general.config(text=T("status.ready"))
+            self.lbl_detalles_servidor.config(text=T("status.hint"))
 
     def mostrar_menu_exportacion(self):
         """Despliega el menú flotante de exportación justo debajo del botón correspondiente."""
@@ -354,15 +470,8 @@ class AuditorSeguridadGUI:
     def acerca_de(self):
         """Muestra la información de autoría y versión del programa."""
         messagebox.showinfo(
-            "Acerca de",
-            "Auditor de Seguridad HTTP {}\n\n"
-            "Análisis de cabeceras de seguridad, TLS y cookies con informe exportable.\n\n"
-            "Autor: {}\n"
-            "Correo: {}\n"
-            "{}\n"
-            "Licencia: MIT\n\n"
-            "El historial se guarda en historial_auditorias.json y se conserva una copia\n"
-            "del estado anterior en historial_auditorias.bak.json.".format(VERSION_APP, AUTOR, CORREO, COPYRIGHT)
+            T("about.title"),
+            T("about.text", version=VERSION_APP, author=AUTOR, email=CORREO, copyright=COPYRIGHT)
         )
 
     def construir_tab_informe(self):
@@ -370,10 +479,10 @@ class AuditorSeguridadGUI:
         self.frame_resumen = ttk.Frame(self.tab_informe, padding=10)
         self.frame_resumen.pack(fill=tk.X)
 
-        self.lbl_estado_general = ttk.Label(self.frame_resumen, text="Estado: Listo para analizar", font=("Segoe UI", 11, "bold"))
+        self.lbl_estado_general = ttk.Label(self.frame_resumen, text=T("status.ready"), font=("Segoe UI", 11, "bold"))
         self.lbl_estado_general.pack(anchor="w")
 
-        self.lbl_detalles_servidor = ttk.Label(self.frame_resumen, text="Introduce la dirección de tu página y haz clic en 'Analizar Web'.", foreground="#555555")
+        self.lbl_detalles_servidor = ttk.Label(self.frame_resumen, text=T("status.hint"), foreground="#555555")
         self.lbl_detalles_servidor.pack(anchor="w", pady=(2, 0))
 
         canvas_container = ttk.Frame(self.tab_informe)
@@ -458,10 +567,10 @@ class AuditorSeguridadGUI:
 
         self.tree_historial = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse")
 
-        self.tree_historial.heading("fecha", text="Fecha / Hora")
-        self.tree_historial.heading("url", text="Dirección URL Analizada")
-        self.tree_historial.heading("estado", text="Código HTTP")
-        self.tree_historial.heading("calificacion", text="Nota de Seguridad")
+        self.tree_historial.heading("fecha", text=T("hist.date"))
+        self.tree_historial.heading("url", text=T("hist.url"))
+        self.tree_historial.heading("estado", text=T("hist.status"))
+        self.tree_historial.heading("calificacion", text=T("hist.grade"))
 
         self.tree_historial.column("fecha", width=160, anchor="center")
         self.tree_historial.column("url", width=430, anchor="w")
@@ -478,13 +587,13 @@ class AuditorSeguridadGUI:
         btn_frame = ttk.Frame(frame_hist)
         btn_frame.pack(fill=tk.X)
 
-        self.btn_borrar_item = ttk.Button(btn_frame, text=ico("🗑️ ", "") + "Borrar Seleccionado", command=self.borrar_item_seleccionado)
+        self.btn_borrar_item = ttk.Button(btn_frame, text=ico("🗑️ ", "") + T("hist.delete"), command=self.borrar_item_seleccionado)
         self.btn_borrar_item.pack(side="left", padx=(0, 10))
 
-        self.btn_limpiar_todo = ttk.Button(btn_frame, text=ico("🧹 ", "") + "Limpiar Todo", command=self.limpiar_todo_historial)
+        self.btn_limpiar_todo = ttk.Button(btn_frame, text=ico("🧹 ", "") + T("hist.clear"), command=self.limpiar_todo_historial)
         self.btn_limpiar_todo.pack(side="left")
 
-        self.btn_restaurar = ttk.Button(btn_frame, text=ico("♻️ ", "") + "Restaurar Copia", command=self.restaurar_copia_historial)
+        self.btn_restaurar = ttk.Button(btn_frame, text=ico("♻️ ", "") + T("hist.restore"), command=self.restaurar_copia_historial)
         self.btn_restaurar.pack(side="left", padx=(10, 0))
 
         # Enlaces de eventos del ratón y teclado sobre el Treeview
@@ -521,7 +630,7 @@ class AuditorSeguridadGUI:
         """Elimina el registro de auditoría seleccionado en el historial tras confirmación."""
         seleccion = self.tree_historial.selection()
         if not seleccion:
-            messagebox.showwarning("Atención", "Por favor, selecciona un registro del historial para borrar.")
+            messagebox.showwarning(T("dlg.attention"), T("hist.select_first"))
             return
 
         idx = self.mapa_iids.get(seleccion[0])
@@ -529,7 +638,7 @@ class AuditorSeguridadGUI:
             self.actualizar_tabla_historial()
             return
 
-        if messagebox.askyesno("Confirmar eliminación", "¿Estás seguro de que deseas eliminar el registro seleccionado?"):
+        if messagebox.askyesno(T("hist.confirm_delete_title"), T("hist.confirm_delete")):
             del self.historial[idx]
             self.guardar_historial_disco()
             self.actualizar_tabla_historial()
@@ -537,10 +646,10 @@ class AuditorSeguridadGUI:
     def limpiar_todo_historial(self):
         """Vacía por completo el historial de auditorías guardado."""
         if not self.historial:
-            messagebox.showinfo("Atención", "El historial ya está vacío.")
+            messagebox.showinfo(T("dlg.attention"), T("hist.empty"))
             return
 
-        if messagebox.askyesno("Confirmar limpieza", "¿Estás seguro de que deseas limpiar todo el historial de registros?"):
+        if messagebox.askyesno(T("hist.confirm_clear_title"), T("hist.confirm_clear")):
             self.historial.clear()
             self.guardar_historial_disco()
             self.actualizar_tabla_historial()
@@ -548,18 +657,18 @@ class AuditorSeguridadGUI:
     def restaurar_copia_historial(self):
         """Recupera los registros de la copia de seguridad que ya no estén en el historial actual."""
         if not os.path.exists(COPIA_HISTORIAL):
-            messagebox.showinfo("Historial", "Todavía no hay ninguna copia de seguridad del historial.")
+            messagebox.showinfo(T("dlg.info"), T("hist.no_backup"))
             return
 
         try:
             with open(COPIA_HISTORIAL, "r", encoding="utf-8") as f:
                 copia = json.load(f)
         except Exception as e:
-            messagebox.showerror("Historial", "No se pudo leer la copia de seguridad:\n{}".format(e))
+            messagebox.showerror(T("dlg.error"), T("hist.backup_read_error", error=e))
             return
 
         if not isinstance(copia, list):
-            messagebox.showerror("Historial", "La copia de seguridad no tiene un formato válido.")
+            messagebox.showerror(T("dlg.error"), T("hist.backup_invalid"))
             return
 
         claves = {(item.get("fecha"), item.get("url")) for item in self.historial}
@@ -567,15 +676,14 @@ class AuditorSeguridadGUI:
                   if isinstance(item, dict) and item.get("url") and (item.get("fecha"), item.get("url")) not in claves]
 
         if not nuevos:
-            messagebox.showinfo("Historial", "La copia de seguridad no contiene registros que falten.")
+            messagebox.showinfo(T("dlg.info"), T("hist.backup_nothing"))
             return
 
-        if messagebox.askyesno("Restaurar copia",
-                               "Se van a recuperar {} registros de la copia de seguridad.\n¿Continuar?".format(len(nuevos))):
+        if messagebox.askyesno(T("hist.restore_title"), T("hist.restore_question", count=len(nuevos))):
             self.historial = (self.historial + nuevos)[:MAX_HISTORIAL]
             self.guardar_historial_disco()
             self.actualizar_tabla_historial()
-            messagebox.showinfo("Historial", "Se han recuperado {} registros.".format(len(nuevos)))
+            messagebox.showinfo(T("dlg.info"), T("hist.restored", count=len(nuevos)))
 
     # ==========================================
     # 3. LÓGICA DE AUDITORÍA Y SUBPROCESOS
@@ -587,14 +695,14 @@ class AuditorSeguridadGUI:
 
         url, error = normalizar_url(self.url_var.get())
         if error:
-            messagebox.showwarning("Atención", error)
+            messagebox.showwarning(T("dlg.attention"), error)
             return
 
         self.url_var.set(url)
         self.analizando = True
-        self.btn_analizar.config(state=tk.DISABLED, text="Analizando...")
+        self.btn_analizar.config(state=tk.DISABLED, text=T("form.analyzing"))
         self.btn_lotes.config(state=tk.DISABLED)
-        self.lbl_estado_general.config(text="Analizando {} ...".format(url), foreground="#555555")
+        self.lbl_estado_general.config(text=T("status.analyzing", url=url), foreground="#555555")
 
         threading.Thread(target=self.ejecutar_analisis_con_cpp, args=(url,), daemon=True).start()
 
@@ -605,8 +713,7 @@ class AuditorSeguridadGUI:
         """
         ruta_core = ruta_recurso(NOMBRE_CORE)
         if not os.path.exists(ruta_core):
-            return None, ("No se encontró el módulo de análisis '{}'.\n"
-                          "Debe estar en la misma carpeta que este programa.".format(NOMBRE_CORE))
+            return None, T("err.core_missing", name=NOMBRE_CORE)
 
         startupinfo = None
         creacion = 0
@@ -628,9 +735,9 @@ class AuditorSeguridadGUI:
                 creationflags=creacion
             )
         except subprocess.TimeoutExpired:
-            return None, "La web no respondió en {} segundos. Puede estar caída o muy lenta.".format(timeout)
+            return None, T("err.timeout", seconds=timeout)
         except OSError as exc:
-            return None, "No se pudo iniciar el módulo de análisis: {}".format(exc)
+            return None, T("err.core_start", error=exc)
 
         texto = (proceso.stdout or "").strip()
         datos = None
@@ -642,27 +749,31 @@ class AuditorSeguridadGUI:
 
         # El núcleo comunica el motivo exacto del fallo dentro del JSON.
         if isinstance(datos, dict) and datos.get("ok") is False:
-            return None, datos.get("mensaje") or "No se pudo completar la auditoría."
+            clave = "err.net." + str(datos.get("error") or "unknown")
+            mensaje = T_or(clave, datos.get("mensaje") or T("err.generic"))
+            if datos.get("error") == "http" and datos.get("status_code"):
+                mensaje = T("err.http_code", code=datos.get("status_code"))
+            return None, mensaje
 
         if proceso.returncode != 0 or not isinstance(datos, dict):
             detalle = (proceso.stderr or "").strip()
-            mensaje = "No se pudo completar la auditoría."
+            mensaje = T("err.generic")
             if detalle:
-                mensaje += "\n\nDetalle: " + detalle
+                mensaje += "\n\n" + T("err.detail", detail=detalle)
             return None, mensaje
 
         # Comprobación mínima del contrato del núcleo.
         if not isinstance(datos.get("evaluacion"), list) or not datos["evaluacion"]:
-            return None, "El módulo de análisis devolvió una respuesta incompleta."
+            return None, T("err.incomplete")
 
         status_code = datos.get("status_code") or 0
         if status_code < 200 or status_code >= 400:
             motivo = datos.get("reason") or ""
-            return None, "El servidor respondió HTTP {} {}. Comprueba la dirección.".format(status_code, motivo).replace("  ", " ")
+            return None, T("err.http", code=status_code, reason=motivo).replace("  ", " ")
 
         # Normalización defensiva de los campos usados por la interfaz.
         datos.setdefault("url", url)
-        datos.setdefault("server", "Oculto / Protegido")
+        datos.setdefault("server", T("value.server_hidden"))
         datos.setdefault("presentes", sum(1 for i in datos["evaluacion"] if i.get("presente")))
         datos.setdefault("total", len(datos["evaluacion"]))
         return datos, None
@@ -703,14 +814,14 @@ class AuditorSeguridadGUI:
     def finalizar_con_error(self, mensaje):
         """Restaura la interfaz y muestra el motivo real del fallo."""
         self.restaurar_controles()
-        self.lbl_estado_general.config(text="Último análisis: no se pudo completar", foreground="#dc3545")
+        self.lbl_estado_general.config(text=T("status.failed"), foreground="#dc3545")
         self.lbl_detalles_servidor.config(text=mensaje)
-        messagebox.showerror("Error de Análisis", mensaje)
+        messagebox.showerror(T("err.connection_title"), mensaje)
 
     def restaurar_controles(self):
         """Restaura el estado original de los botones tras finalizar un análisis."""
         self.analizando = False
-        self.btn_analizar.config(state=tk.NORMAL, text=ico("🔍 ", "") + "Analizar Web")
+        self.btn_analizar.config(state=tk.NORMAL, text=ico("🔍 ", "") + T("form.analyze"))
         self.btn_lotes.config(state=tk.NORMAL)
 
     def recordar_url(self, url):
@@ -734,19 +845,18 @@ class AuditorSeguridadGUI:
 
         color_resumen = "#0a8042" if nota in ["A+", "A"] else ("#fd7e14" if nota in ["B", "C"] else "#dc3545")
         self.lbl_estado_general.config(
-            text="Resultado: {} de {} comprobaciones · Nota: {} ({}% de calidad · {:.1f}/{:.0f} puntos)".format(
-                len(superadas), len(aplicables), nota, int(round(porcentaje)), puntos, puntos_max),
+            text=T("status.summary", ok=len(superadas), total=len(aplicables), grade=nota,
+                   pct=int(round(porcentaje)), points="{:.1f}".format(puntos), max="{:.0f}".format(puntos_max)),
             foreground=color_resumen
         )
 
-        detalles = "Respuesta HTTP: {} {} | Servidor: {} | Fecha: {}".format(
-            res.get("status_code", "?"), res.get("reason", ""), res.get("server", "?"), res.get("fecha", "-")
-        )
+        detalles = T("status.http", status=res.get("status_code", "?"), reason=res.get("reason", ""),
+                     server=res.get("server", "?"), date=res.get("fecha", "-"))
         protocolo = res.get("tls_protocolo")
         if protocolo:
-            detalles += " | TLS: " + protocolo
+            detalles += T("status.tls", protocol=protocolo)
         if res.get("https") is False:
-            detalles += "  ⚠ Sitio sin cifrar (HTTP)"
+            detalles += T("status.insecure")
         self.lbl_detalles_servidor.config(text=detalles)
 
         for item in evaluacion:
@@ -759,19 +869,21 @@ class AuditorSeguridadGUI:
             top_line = ttk.Frame(card)
             top_line.pack(fill=tk.X)
 
-            lbl_title = tk.Label(top_line, text="{} {}".format(icono, item.get("nombre", "")),
+            lbl_title = tk.Label(top_line, text="{} {}".format(icono, nombre_item(item)),
                                  font=("Segoe UI", 11, "bold"), fg=color_txt, bg="#ffffff")
             lbl_title.pack(side=tk.LEFT)
 
-            texto_badge = "Estado: {} | Criticidad: {}".format(estado_txt, item.get("criticidad", "-"))
             if peso > 0 and item.get("aplicable", True):
-                texto_badge += " | Calidad: {}%".format(calidad_item(item))
+                texto_badge = T("card.state", state=estado_txt, crit=crit_item(item),
+                                quality=calidad_item(item))
+            else:
+                texto_badge = T("card.state_simple", state=estado_txt, crit=crit_item(item))
 
             lbl_badge = tk.Label(top_line, text=texto_badge, font=("Segoe UI", 9, "bold"),
                                  fg="#ffffff", bg=color_txt, padx=8, pady=2)
             lbl_badge.pack(side=tk.RIGHT)
 
-            lbl_desc = tk.Label(card, text=item.get("desc", ""), font=("Segoe UI", 9, "italic"),
+            lbl_desc = tk.Label(card, text=desc_item(item), font=("Segoe UI", 9, "italic"),
                                 fg="#555555", bg="#ffffff", anchor="w", justify=tk.LEFT)
             lbl_desc.pack(fill=tk.X, pady=(4, 4))
 
@@ -780,8 +892,8 @@ class AuditorSeguridadGUI:
             else:
                 val_bg = "#ffebee" if peso > 0 and item.get("aplicable", True) else "#f1f3f5"
 
-            etiqueta_valor = "Valor recibido:  " if item.get("header") else "Detalle:  "
-            lbl_val = tk.Label(card, text=etiqueta_valor + str(item.get("valor", "")), font=("Consolas", 9),
+            clave_valor = "card.value" if item.get("header") else "card.detail"
+            lbl_val = tk.Label(card, text=T(clave_valor, value=valor_item(item)), font=("Consolas", 9),
                                fg="#333333", bg=val_bg, anchor="w", justify=tk.LEFT, padx=6, pady=4)
             lbl_val.pack(fill=tk.X)
 
@@ -789,9 +901,9 @@ class AuditorSeguridadGUI:
             self._etiquetas_wrap.append(lbl_val)
 
             # Observación sobre la calidad del valor (presente pero mal configurado).
-            aviso = (item.get("aviso") or "").strip()
+            aviso = aviso_item(item).strip()
             if aviso:
-                lbl_aviso = tk.Label(card, text="⚠ Observación: {}".format(aviso), font=("Segoe UI", 9),
+                lbl_aviso = tk.Label(card, text=T("card.aviso", text=aviso), font=("Segoe UI", 9),
                                      fg="#8a5a00", bg="#fff4d6", anchor="w", justify=tk.LEFT, padx=6, pady=4)
                 lbl_aviso.pack(fill=tk.X, pady=(4, 0))
                 self._etiquetas_wrap.append(lbl_aviso)
@@ -812,7 +924,9 @@ class AuditorSeguridadGUI:
             "fecha": res.get("fecha", ""),
             "url": res.get("url", ""),
             "status": "{} {}".format(res.get("status_code", ""), res.get("reason", "")).strip() or "N/A",
-            "calificacion": "Nota: {} ({}%)".format(nota, int(round(porcentaje))),
+            "calificacion": T("hist.grade_value", grade=nota, pct=int(round(porcentaje))),
+            "grade": nota,
+            "pct": int(round(porcentaje)),
             "detalle_completo": res
         }
 
@@ -830,8 +944,11 @@ class AuditorSeguridadGUI:
 
         self.mapa_iids = {}
         for idx, elem in enumerate(self.historial):
+            nota = elem.get("calificacion", "")
+            if elem.get("grade") is not None:
+                nota = T("hist.grade_value", grade=elem.get("grade"), pct=elem.get("pct", 0))
             iid = self.tree_historial.insert("", tk.END, values=(
-                elem.get("fecha", ""), elem.get("url", ""), elem.get("status", ""), elem.get("calificacion", "")
+                elem.get("fecha", ""), elem.get("url", ""), elem.get("status", ""), nota
             ))
             self.mapa_iids[iid] = idx
 
@@ -849,7 +966,7 @@ class AuditorSeguridadGUI:
         item_hist = self.historial[idx]
         detalle = item_hist.get("detalle_completo")
         if not isinstance(detalle, dict) or not detalle.get("evaluacion"):
-            messagebox.showinfo("Información", "Este registro es antiguo y no contiene el desglose detallado.")
+            messagebox.showinfo(T("dlg.info"), T("hist.old_no_detail"))
             return
 
         self.ultimo_resultado = detalle
@@ -902,7 +1019,7 @@ class AuditorSeguridadGUI:
                     os.remove(temporal)
             except OSError:
                 pass
-            messagebox.showerror("Error de Archivo", f"No se pudo guardar el historial:\n{e}")
+            messagebox.showerror(T("dlg.error"), T("hist.save_error", error=e))
 
     def registrar_error_no_controlado(self, tipo, valor, tb):
         """Guarda en disco cualquier error inesperado de la interfaz (la app compilada no tiene consola)."""
@@ -913,10 +1030,7 @@ class AuditorSeguridadGUI:
         except Exception:
             pass
         if not self.cerrando:
-            messagebox.showerror(
-                "Error inesperado",
-                "Se ha producido un error inesperado:\n{}\n\nEl detalle se ha guardado en auditor_errores.log.".format(valor)
-            )
+            messagebox.showerror(T("err.unexpected_title"), T("err.unexpected", error=valor))
 
     def cerrar_aplicacion(self):
         """Cierra la ventana de forma ordenada aunque haya un análisis en curso."""
@@ -935,8 +1049,8 @@ class AuditorSeguridadGUI:
             return
 
         filepath = filedialog.askopenfilename(
-            title="Seleccionar archivo de URLs por lotes",
-            filetypes=[("Archivos de texto", "*.txt"), ("Todos los archivos", "*.*")]
+            title=T("batch.select_file"),
+            filetypes=[(T("batch.filter_text"), "*.txt"), (T("batch.filter_all"), "*.*")]
         )
         if not filepath:
             return
@@ -944,20 +1058,20 @@ class AuditorSeguridadGUI:
         try:
             urls = self.leer_archivo_lotes(filepath)
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo leer el archivo de lotes:\n{e}")
+            messagebox.showerror(T("dlg.error"), T("batch.read_error", error=e))
             return
 
         if not urls:
-            messagebox.showwarning("Lotes", "El archivo seleccionado no contiene URLs válidas.")
+            messagebox.showwarning(T("form.batch"), T("batch.empty"))
             return
 
         self.analizando = True
         self.btn_analizar.config(state=tk.DISABLED)
         self.btn_lotes.config(state=tk.DISABLED)
-        self.lbl_estado_general.config(text="Preparando auditoría de {} URLs...".format(len(urls)), foreground="#555555")
+        self.lbl_estado_general.config(text=T("batch.progress", current=0, total=len(urls), url=""), foreground="#555555")
 
         threading.Thread(target=self.procesar_lotes, args=(urls,), daemon=True).start()
-        messagebox.showinfo("Procesando Lotes", "La auditoría por lotes se está ejecutando en segundo plano.\nAl terminar se mostrará un resumen.")
+        messagebox.showinfo(T("batch.title"), T("batch.started"))
 
     def leer_archivo_lotes(self, filepath):
         """Lee el archivo de URLs tolerando distintas codificaciones (UTF-8, ANSI/Windows-1252)."""
@@ -991,7 +1105,7 @@ class AuditorSeguridadGUI:
         total = len(urls)
 
         for i, u in enumerate(urls, start=1):
-            self.cola_eventos.put(("progreso", "Auditando {}/{}: {}".format(i, total, u)))
+            self.cola_eventos.put(("progreso", T("batch.progress", current=i, total=total, url=u)))
             datos, error = self.consultar_nucleo(u, TIMEOUT_LOTE)
             if error:
                 fallos.append((u, error))
@@ -1024,21 +1138,21 @@ class AuditorSeguridadGUI:
         self.restaurar_controles()
 
         if resultados:
-            resumen = "Se auditaron correctamente {} de {} URLs.\nLos resultados se han añadido al historial.".format(len(resultados), total)
+            resumen = T("batch.finished", ok=len(resultados), total=total)
         else:
-            resumen = "No se pudo auditar ninguna de las {} URLs del archivo.".format(total)
+            resumen = T("batch.none", total=total)
 
         if fallos:
-            resumen += "\n\nFallos detectados:"
+            resumen += "\n\n" + T("batch.failures")
             for u, motivo in fallos[:8]:
                 resumen += "\n- {}: {}".format(u, motivo)
             if len(fallos) > 8:
-                resumen += "\n... y {} más.".format(len(fallos) - 8)
+                resumen += "\n" + T("batch.more", count=len(fallos) - 8)
 
         if resultados:
-            messagebox.showinfo("Lotes Finalizado", resumen)
+            messagebox.showinfo(T("batch.finished_title"), resumen)
         else:
-            messagebox.showerror("Lotes", resumen)
+            messagebox.showerror(T("form.batch"), resumen)
 
     def exportar_json(self):
         """Exporta el último resultado de la auditoría en formato JSON estructurado."""
@@ -1046,7 +1160,7 @@ class AuditorSeguridadGUI:
             return
         filepath = filedialog.asksaveasfilename(
             defaultextension=".json",
-            filetypes=[("Archivos JSON", "*.json")],
+            filetypes=[(T("export.file_json"), "*.json")],
             initialfile=nombre_archivo_seguro(self.ultimo_resultado.get("url", ""), "informe_seguridad", ".json")
         )
         if filepath:
@@ -1061,9 +1175,9 @@ class AuditorSeguridadGUI:
                 }
                 with open(filepath, "w", encoding="utf-8") as f:
                     json.dump(exportacion, f, ensure_ascii=False, indent=4)
-                messagebox.showinfo("Éxito", "Informe exportado a JSON correctamente.")
+                messagebox.showinfo(T("dlg.success"), T("export.json_ok"))
             except Exception as e:
-                messagebox.showerror("Error", f"No se pudo exportar: {e}")
+                messagebox.showerror(T("dlg.error"), T("export.failed", error=e))
 
     def exportar_csv(self):
         """Exporta el desglose del análisis en formato tabular compatible con hojas de cálculo (CSV)."""
@@ -1071,7 +1185,7 @@ class AuditorSeguridadGUI:
             return
         filepath = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            filetypes=[("Archivos CSV", "*.csv")],
+            filetypes=[(T("export.file_csv"), "*.csv")],
             initialfile=nombre_archivo_seguro(self.ultimo_resultado.get("url", ""), "informe_seguridad", ".csv")
         )
         if filepath:
@@ -1079,40 +1193,38 @@ class AuditorSeguridadGUI:
                 # utf-8-sig permite que Excel muestre bien los acentos; ';' es el separador de la configuración regional española.
                 with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
                     writer = csv.writer(f, delimiter=";")
-                    writer.writerow(["Comprobacion", "Estado", "Criticidad", "Peso", "Calidad %", "Valor Detectado", "Observacion", "Descripcion"])
+                    writer.writerow([T("csv.col.check"), T("csv.col.state"), T("csv.col.criticality"),
+                                     T("csv.col.weight"), T("csv.col.quality"), T("csv.col.value"),
+                                     T("csv.col.note"), T("csv.col.description")])
                     for item in self.ultimo_resultado.get("evaluacion", []):
                         if not isinstance(item, dict):
                             continue
                         writer.writerow([
-                            item.get("nombre", ""),
+                            nombre_item(item),
                             estado_item(item)[0],
-                            item.get("criticidad", ""),
+                            crit_item(item),
                             peso_item(item),
                             calidad_item(item),
-                            item.get("valor", ""),
-                            item.get("aviso", ""),
-                            item.get("desc", "")
+                            valor_item(item),
+                            aviso_item(item),
+                            desc_item(item)
                         ])
-                messagebox.showinfo("Éxito", "Informe exportado a CSV correctamente.")
+                messagebox.showinfo(T("dlg.success"), T("export.csv_ok"))
             except Exception as e:
-                messagebox.showerror("Error", f"No se pudo exportar: {e}")
+                messagebox.showerror(T("dlg.error"), T("export.failed", error=e))
 
     def exportar_pdf(self):
         """Genera y compila un informe profesional en formato PDF utilizando la librería ReportLab."""
         if not self.ultimo_resultado:
             return
         if not REPORTLAB_DISPONIBLE:
-            messagebox.showerror(
-                "Falta ReportLab",
-                "No se pudo cargar la librería ReportLab, necesaria para crear PDF.\n\n"
-                "Instálala con:  pip install reportlab"
-            )
+            messagebox.showerror(T("export.reportlab_missing_title"), T("export.reportlab_missing"))
             return
 
         filepath = filedialog.asksaveasfilename(
             defaultextension=".pdf",
-            filetypes=[("Archivos PDF", "*.pdf")],
-            title="Guardar Informe de Seguridad como PDF",
+            filetypes=[(T("export.file_pdf"), "*.pdf")],
+            title=T("export.save_pdf"),
             initialfile=nombre_archivo_seguro(self.ultimo_resultado.get("url", ""), "Informe_Seguridad", ".pdf")
         )
 
@@ -1121,9 +1233,9 @@ class AuditorSeguridadGUI:
 
         try:
             doc = SimpleDocTemplate(filepath, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36,
-                                    title="Informe de Auditoría de Seguridad HTTP",
+                                    title=T("pdf.title"),
                                     author="{} <{}>".format(AUTOR, CORREO),
-                                    subject="Auditoría de seguridad web")
+                                    subject=T("pdf.title"))
             styles = getSampleStyleSheet()
 
             title_style = ParagraphStyle("DocTitle", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=18,
@@ -1140,7 +1252,7 @@ class AuditorSeguridadGUI:
 
             story = []
 
-            story.append(Paragraph("Informe de Auditoría de Seguridad HTTP", title_style))
+            story.append(Paragraph(escapar_xml(T("pdf.title")), title_style))
             story.append(Spacer(1, 6))
 
             res = self.ultimo_resultado
@@ -1150,44 +1262,47 @@ class AuditorSeguridadGUI:
             puntos, puntos_max, porcentaje, nota = evaluar_puntuacion(evaluacion)
 
             meta = [
-                ("Sitio Web Analizado", res.get("url", "-")),
-                ("Fecha de Inspección", res.get("fecha", "-")),
-                ("Código de Respuesta", "{} {}".format(res.get("status_code", "-"), res.get("reason", "")).strip()),
-                ("Servidor / Proxy", res.get("server", "-")),
-                ("Cifrado", "{} (TLS: {})".format(
-                    "HTTPS" if res.get("https", True) else "HTTP sin cifrar",
-                    res.get("tls_protocolo") or "no disponible")),
-                ("Nota de Seguridad", "{} — {}% de calidad ({:.1f} de {:.0f} puntos, {} de {} comprobaciones)".format(
-                    nota, int(round(porcentaje)), puntos, puntos_max, len(superadas), len(aplicables))),
+                (T("pdf.site"), res.get("url", "-")),
+                (T("pdf.date"), res.get("fecha", "-")),
+                (T("pdf.status"), "{} {}".format(res.get("status_code", "-"), res.get("reason", "")).strip()),
+                (T("pdf.server"), res.get("server", "-")),
+                (T("pdf.crypto"), "{} (TLS: {})".format(
+                    T("pdf.crypto_https") if res.get("https", True) else T("pdf.crypto_http"),
+                    res.get("tls_protocolo") or T("pdf.tls_unavailable"))),
+                (T("pdf.grade"), T("pdf.grade_value", grade=nota, pct=int(round(porcentaje)),
+                                   points="{:.1f}".format(puntos), max="{:.0f}".format(puntos_max),
+                                   ok=len(superadas), total=len(aplicables))),
             ]
             for etiqueta, valor in meta:
                 story.append(Paragraph("<b>{}:</b> {}".format(escapar_xml(etiqueta), escapar_xml(str(valor))), normal_style))
             story.append(Spacer(1, 15))
 
-            story.append(Paragraph("Evaluación Detallada", h2_style))
+            story.append(Paragraph(escapar_xml(T("pdf.section")), h2_style))
 
-            data = [["Comprobación", "Estado", "Criticidad", "Valor Detectado en Servidor"]]
+            data = [[T("pdf.col.check"), T("pdf.col.state"), T("pdf.col.criticality"), T("pdf.col.value")]]
 
             for item in evaluacion:
                 estado_txt, color_estado, _ = estado_item(item)
                 color = {"#0a8042": "green", "#fd7e14": "#c46a00", "#dc3545": "red",
                          "#0d6efd": "#0d6efd", "#6c757d": "#6c757d"}.get(color_estado, "#333333")
                 if item.get("aplicable", True) and peso_item(item) > 0:
-                    estado_html = "<font color='{}'><b>{}</b></font><br/>Calidad: {}%".format(
-                        color, escapar_xml(estado_txt), calidad_item(item))
+                    estado_html = "<font color='{}'><b>{}</b></font><br/>{}".format(
+                        color, escapar_xml(estado_txt),
+                        escapar_xml(T("pdf.quality", quality=calidad_item(item))))
                 else:
                     estado_html = "<font color='{}'>{}</font>".format(color, escapar_xml(estado_txt))
                 estado_p = Paragraph(estado_html, normal_style)
 
                 cabecera = "<b>{}</b><br/><font color='#555555'>{}</font>".format(
-                    escapar_xml(str(item.get("nombre", ""))), escapar_xml(str(item.get("desc", ""))))
-                aviso = (item.get("aviso") or "").strip()
+                    escapar_xml(nombre_item(item)), escapar_xml(desc_item(item)))
+                aviso = aviso_item(item).strip()
                 if aviso:
-                    cabecera += "<br/><font color='#b8860b'>Observación: {}</font>".format(escapar_xml(aviso))
+                    cabecera += "<br/><font color='#b8860b'>{}</font>".format(
+                        escapar_xml(T("pdf.observation", text=aviso)))
                 header_p = Paragraph(cabecera, normal_style)
 
-                crit_p = texto(item.get("criticidad", ""))
-                val_p = texto(item.get("valor", ""), code_style)
+                crit_p = texto(crit_item(item))
+                val_p = texto(valor_item(item), code_style)
 
                 data.append([header_p, estado_p, crit_p, val_p])
 
@@ -1206,13 +1321,10 @@ class AuditorSeguridadGUI:
 
             story.append(table)
             story.append(Spacer(1, 14))
-            story.append(texto("La nota pondera la criticidad de cada comprobación y la calidad del valor configurado: "
-                               "una cabecera presente pero débil resta puntos. La ausencia de una cabecera no implica "
-                               "por sí sola una vulnerabilidad explotable; debe valorarse junto con el resto de la "
-                               "configuración del servidor.",
+            story.append(texto(T("pdf.note"),
                                ParagraphStyle("Nota", parent=normal_style, fontSize=8, textColor=colors.HexColor("#666666"))))
             story.append(Spacer(1, 10))
-            story.append(texto("{} — {} · Auditor de Seguridad HTTP {}.".format(COPYRIGHT, CORREO, VERSION_APP),
+            story.append(texto("{} — {} · {}".format(COPYRIGHT, CORREO, T("app.title")),
                                ParagraphStyle("Firma", parent=normal_style, fontSize=8.5,
                                               textColor=colors.HexColor("#18346a"))))
 
@@ -1222,17 +1334,17 @@ class AuditorSeguridadGUI:
                 canvas.setFillColor(colors.HexColor("#666666"))
                 canvas.drawString(36, 26, "{} · {}".format(COPYRIGHT, CORREO))
                 canvas.setFont("Helvetica", 7)
-                canvas.drawString(36, 16, "Auditor de Seguridad HTTP {} - informe automático".format(VERSION_APP))
+                canvas.drawString(36, 16, T("pdf.footer", version=VERSION_APP))
                 canvas.setFont("Helvetica", 7.5)
-                canvas.drawRightString(letter[0] - 36, 26, "Página {}".format(documento.page))
+                canvas.drawRightString(letter[0] - 36, 26, T("pdf.page", page=documento.page))
                 canvas.restoreState()
 
             doc.build(story, onFirstPage=pie_pagina, onLaterPages=pie_pagina)
 
-            messagebox.showinfo("Éxito", f"El informe PDF se ha generado correctamente en:\n{filepath}")
+            messagebox.showinfo(T("dlg.success"), T("export.pdf_ok_path", path=filepath))
 
         except Exception as e:
-            messagebox.showerror("Error al Exportar", f"No se pudo crear el archivo PDF.\n\nDetalles: {e}")
+            messagebox.showerror(T("export.pdf_title"), T("export.pdf_failed", error=e))
 
 
 # ==========================================

@@ -6,8 +6,8 @@
 1 ICON "escudo.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 4,0,0,0
- PRODUCTVERSION 4,0,0,0
+ FILEVERSION 4,1,0,0
+ PRODUCTVERSION 4,1,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -20,12 +20,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Juan Ramon Martin"
             VALUE "FileDescription", "Auditor de Seguridad HTTP (versión nativa)"
-            VALUE "FileVersion", "4.0.0.0"
+            VALUE "FileVersion", "4.1.0.0"
             VALUE "InternalName", "auditor"
             VALUE "LegalCopyright", "© 2026 Juan Ramon Martin. Licencia MIT."
             VALUE "OriginalFilename", "auditor.exe"
             VALUE "ProductName", "Auditor de Seguridad Web"
-            VALUE "ProductVersion", "4.0.0.0"
+            VALUE "ProductVersion", "4.1.0.0"
             VALUE "Comments", "zeronet75@gmail.com"
         END
     END

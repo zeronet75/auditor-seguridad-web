@@ -29,6 +29,9 @@ sys.path.insert(0, BASE_DIR)
 
 import auditor  # noqa: E402
 
+# Las pruebas comprueban textos concretos: se fija el idioma español.
+auditor.i18n.initialize("es_ES")
+
 FALLOS = []
 
 
@@ -140,6 +143,34 @@ def ejecutar_nucleo(url):
 # ==========================================
 # Pruebas
 # ==========================================
+def probar_idiomas():
+    print("\n[0] Sistema de idiomas")
+    idiomas = auditor.i18n.available()
+    comprobar(len(idiomas) == 16, "16 idiomas en el menú ({})".format(len(idiomas)))
+    nativos = [nombre for _, nombre in idiomas]
+    for esperado in ("English", "Español", "हिन्दी", "Bahasa Indonesia", "Tiếng Việt",
+                     "العربية", "日本語", "中文 (简体)", "中文 (繁體)", "Русский"):
+        comprobar(esperado in nativos, "nombre nativo: " + esperado)
+
+    auditor.i18n.set_language("es_ES")
+    comprobar(auditor.T("form.analyze") == "Analizar Web", "es_ES: Analizar Web")
+    auditor.i18n.set_language("en_US")
+    comprobar(auditor.T("form.analyze") == "Analyze Web", "en_US: Analyze Web")
+    comprobar(auditor.T("clave.inexistente") == "clave.inexistente", "clave ausente -> clave")
+    comprobar(auditor.T_or("clave.inexistente", "respaldo") == "respaldo", "fallback a texto de respaldo")
+    texto = auditor.T("status.summary", ok=1, total=2, grade="A", pct=90, points="9.0", max="10")
+    comprobar("Result" in texto and "1" in texto and "2" in texto, "placeholders en la cadena")
+
+    auditor.i18n.set_language("ja_JP")
+    comprobar(auditor.T("form.analyze") == "サイトを分析", "ja_JP: サイトを分析")
+    auditor.i18n.set_language("zh_CN")
+    comprobar(auditor.T("tab.report") == "分析报告", "zh_CN: 分析报告")
+
+    auditor.i18n.save_language("es_ES")
+    comprobar(auditor.i18n.load_saved_language() == "es_ES", "la selección se guarda en disco")
+    auditor.i18n.set_language("es_ES")
+
+
 def probar_normalizacion():
     print("\n[1] Validación y normalización de URLs")
     casos = [
@@ -328,7 +359,9 @@ def probar_gui():
         # El CSV debe abrirse correctamente y contener las columnas nuevas.
         with open(os.path.join(destino, "informe.csv"), encoding="utf-8-sig") as f:
             filas = list(csv.reader(f, delimiter=";"))
-        comprobar(filas[0][:5] == ["Comprobacion", "Estado", "Criticidad", "Peso", "Calidad %"], "CSV con columnas de calidad")
+        comprobar(filas[0][:5] == [auditor.T("csv.col.check"), auditor.T("csv.col.state"),
+                                   auditor.T("csv.col.criticality"), auditor.T("csv.col.weight"),
+                                   auditor.T("csv.col.quality")], "CSV con columnas de calidad")
 
         app.guardar_en_historial(resultado)
         comprobar(len(app.historial) == 1 and os.path.exists(auditor.CONFIG_FILE), "historial guardado en disco")
@@ -367,10 +400,10 @@ def main():
     print(" PRUEBAS DEL AUDITOR DE SEGURIDAD WEB")
     print("=" * 60)
 
+    probar_idiomas()
     probar_normalizacion()
     probar_nombres_archivo()
     probar_puntuacion()
-
     servidor, puerto = arrancar_servidor()
     try:
         probar_nucleo(puerto)

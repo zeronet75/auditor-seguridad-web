@@ -38,6 +38,7 @@
 #include <cwchar>
 #include <cstring>
 #include <iomanip>
+#include <map>
 #include <utility>
 #include <set>
 #include <algorithm>
@@ -73,7 +74,7 @@ const wchar_t DEFAULT_URL[] = L"";   // Sin web por defecto: el usuario introduc
 const wchar_t AUTOR[] = L"Juan Ramon Martin";
 const wchar_t CORREO[] = L"zeronet75@gmail.com";
 const wchar_t COPYRIGHT[] = L"© 2026 Juan Ramon Martin";
-const wchar_t VERSION_APP[] = L"4.0";
+const wchar_t VERSION_APP[] = L"4.1";
 
 // ============================================================================
 // 2. ESTRUCTURAS DE DATOS
@@ -99,6 +100,9 @@ struct CabeceraResultado {
     bool presente = false;
     std::wstring valor;
     std::wstring aviso;
+    std::wstring avisoClave;
+    std::wstring valorClave;
+    std::vector<std::pair<std::wstring, std::wstring>> valorArgs;
     int penalizacion = 0;
 };
 
@@ -207,6 +211,14 @@ void InicializarFuentesGlobales() {
 }
 
 // Obtiene la fecha y hora actual en formato de cadena de texto
+std::wstring FormatearDecimal(double valor, int decimales) {
+    wchar_t buf[32];
+    if (decimales <= 0) swprintf_s(buf, L"%.0f", valor);
+    else if (decimales == 1) swprintf_s(buf, L"%.1f", valor);
+    else swprintf_s(buf, L"%.2f", valor);
+    return buf;
+}
+
 std::wstring ObtenerFechaActual() {
     time_t t = time(0);
     tm ahora;
@@ -480,6 +492,205 @@ private:
 };
 
 // ============================================================================
+// 5b. LOCALIZACIÓN (JSON en localizations/, fallback a en_US)
+// ============================================================================
+namespace L10n {
+    const std::wstring DEFECTO = L"en_US";
+
+    std::map<std::wstring, std::map<std::wstring, std::wstring>> g_catalogos;
+    std::vector<std::pair<std::wstring, std::wstring>> g_idiomas;   // código, nombre nativo
+    std::wstring g_actual = DEFECTO;
+    std::wstring g_carpeta;
+
+    std::wstring Carpeta() {
+        if (!g_carpeta.empty()) return g_carpeta;
+        std::wstring local = CarpetaPrograma() + L"\\localizations";
+        g_carpeta = local;
+        return g_carpeta;
+    }
+
+    std::wstring RutaAjustes() {
+        wchar_t appdata[MAX_PATH] = { 0 };
+        DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+        if (n == 0 || n >= MAX_PATH)
+            return CarpetaPrograma() + L"\\settings.json";
+        return std::wstring(appdata) + L"\\AuditorSeguridadWeb\\settings.json";
+    }
+
+    void Cargar() {
+        g_catalogos.clear();
+        g_idiomas.clear();
+        std::wstring patron = Carpeta() + L"\\*.json";
+        WIN32_FIND_DATAW datos;
+        HANDLE busqueda = FindFirstFileW(patron.c_str(), &datos);
+        if (busqueda == INVALID_HANDLE_VALUE) return;
+
+        do {
+            if (datos.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            std::wstring archivo = datos.cFileName;
+            size_t punto = archivo.find_last_of(L'.');
+            if (punto == std::wstring::npos) continue;
+            std::wstring codigo = archivo.substr(0, punto);
+
+            std::wstring contenido = LeerArchivoTexto(Carpeta() + L"\\" + archivo);
+            if (contenido.empty()) continue;
+            JsonValor raiz;
+            JsonParser parser(contenido);
+            if (!parser.Parsear(raiz) || raiz.tipo != JsonValor::OBJETO) continue;
+
+            std::map<std::wstring, std::wstring> textos;
+            for (const auto& kv : raiz.objeto) {
+                if (kv.second.tipo == JsonValor::TEXTO)
+                    textos[kv.first] = kv.second.texto;
+            }
+            std::wstring nativo = codigo;
+            auto it = textos.find(L"Language");
+            if (it != textos.end() && !it->second.empty()) nativo = it->second;
+            g_catalogos[codigo] = textos;
+            g_idiomas.emplace_back(codigo, nativo);
+        } while (FindNextFileW(busqueda, &datos));
+        FindClose(busqueda);
+
+        std::sort(g_idiomas.begin(), g_idiomas.end(),
+                  [](const std::pair<std::wstring, std::wstring>& a,
+                     const std::pair<std::wstring, std::wstring>& b) {
+                      return a.first < b.first;
+                  });
+    }
+
+    const std::vector<std::pair<std::wstring, std::wstring>>& Idiomas() {
+        if (g_idiomas.empty()) Cargar();
+        return g_idiomas;
+    }
+
+    bool Disponible(const std::wstring& codigo) {
+        if (g_catalogos.empty()) Cargar();
+        return g_catalogos.find(codigo) != g_catalogos.end();
+    }
+
+    std::wstring Normalizar(std::wstring codigo) {
+        for (auto& c : codigo) if (c == L'-') c = L'_';
+        return codigo;
+    }
+
+    std::wstring Nombre(const std::wstring& codigo) {
+        for (const auto& i : Idiomas())
+            if (i.first == codigo) return i.second;
+        return codigo;
+    }
+
+    std::wstring ResolverInicio() {
+        std::wstring guardado;
+        std::wstring contenido = LeerArchivoTexto(RutaAjustes());
+        if (!contenido.empty()) {
+            JsonValor raiz;
+            JsonParser parser(contenido);
+            if (parser.Parsear(raiz) && raiz.tipo == JsonValor::OBJETO)
+                guardado = raiz.Texto(L"Language");
+        }
+        guardado = Normalizar(guardado);
+        if (Disponible(guardado)) return guardado;
+
+        LANGID lang = GetUserDefaultUILanguage();
+        WORD primario = PRIMARYLANGID(lang);
+        std::wstring porIdioma;
+        switch (primario) {
+            case LANG_SPANISH: porIdioma = L"es_ES"; break;
+            case LANG_GERMAN: porIdioma = L"de_DE"; break;
+            case LANG_FRENCH: porIdioma = L"fr_FR"; break;
+            case LANG_ITALIAN: porIdioma = L"it_IT"; break;
+            case LANG_JAPANESE: porIdioma = L"ja_JP"; break;
+            case LANG_KOREAN: porIdioma = L"ko_KR"; break;
+            case LANG_PORTUGUESE: porIdioma = L"pt_BR"; break;
+            case LANG_RUSSIAN: porIdioma = L"ru_RU"; break;
+            case LANG_TURKISH: porIdioma = L"tr_TR"; break;
+            case LANG_ARABIC: porIdioma = L"ar_AR"; break;
+            case LANG_HINDI: porIdioma = L"hi_IN"; break;
+            case LANG_INDONESIAN: porIdioma = L"id_ID"; break;
+            case LANG_VIETNAMESE: porIdioma = L"vi_VN"; break;
+            case LANG_CHINESE:
+                porIdioma = (SUBLANGID(lang) == SUBLANG_CHINESE_TRADITIONAL ||
+                             SUBLANGID(lang) == SUBLANG_CHINESE_HONGKONG)
+                                ? L"zh_TW" : L"zh_CN";
+                break;
+        }
+        if (Disponible(porIdioma)) return porIdioma;
+        return DEFECTO;
+    }
+
+    std::wstring Aplicar(const std::wstring& codigo) {
+        std::wstring elegido = Normalizar(codigo);
+        if (!Disponible(elegido)) elegido = DEFECTO;
+        g_actual = elegido;
+        return g_actual;
+    }
+
+    void Guardar(const std::wstring& codigo) {
+        std::wstring ruta = RutaAjustes();
+        size_t barra = ruta.find_last_of(L'\\');
+        if (barra != std::wstring::npos)
+            CreateDirectoryW(ruta.substr(0, barra).c_str(), NULL);
+        std::wstring json = L"{\n  \"Language\": \"" + codigo + L"\"\n}\n";
+        EscribirArchivoUtf8(ruta, json);
+    }
+
+    const std::map<std::wstring, std::wstring>& Catalogo(const std::wstring& codigo) {
+        static const std::map<std::wstring, std::wstring> vacio;
+        auto it = g_catalogos.find(codigo);
+        return (it == g_catalogos.end()) ? vacio : it->second;
+    }
+
+    std::wstring Sustituir(const std::wstring& texto, const std::wstring& clave,
+                           const std::vector<std::pair<std::wstring, std::wstring>>& args) {
+        std::wstring salida;
+        for (size_t i = 0; i < texto.size();) {
+            if (texto[i] != L'{') { salida += texto[i++]; continue; }
+            size_t fin = texto.find(L'}', i);
+            if (fin == std::wstring::npos) { salida += texto[i++]; continue; }
+            std::wstring nombre = texto.substr(i + 1, fin - i - 1);
+            bool sustituido = false;
+            for (const auto& a : args) {
+                if (a.first == nombre) { salida += a.second; sustituido = true; break; }
+            }
+            if (!sustituido) {
+                salida += texto.substr(i, fin - i + 1);
+                if (false) {
+                    std::wstring aviso = L"[l10n] placeholder sin valor: " + clave + L"." + nombre + L"\n";
+                    OutputDebugStringW(aviso.c_str());
+                }
+            }
+            i = fin + 1;
+        }
+        return salida;
+    }
+
+    std::wstring Tr(const std::wstring& clave,
+                    const std::vector<std::pair<std::wstring, std::wstring>>& args = {}) {
+        if (g_catalogos.empty()) Cargar();
+        const auto& actualCat = Catalogo(g_actual);
+        const auto& defectoCat = Catalogo(DEFECTO);
+        auto it = actualCat.find(clave);
+        if (it != actualCat.end()) return Sustituir(it->second, clave, args);
+        it = defectoCat.find(clave);
+        if (it != defectoCat.end()) return Sustituir(it->second, clave, args);
+        OutputDebugStringW((L"[l10n] clave no encontrada: " + clave + L"\n").c_str());
+        return clave;
+    }
+
+    std::wstring TrOr(const std::wstring& clave, const std::wstring& defecto,
+                      const std::vector<std::pair<std::wstring, std::wstring>>& args = {}) {
+        if (g_catalogos.empty()) Cargar();
+        const auto& actualCat = Catalogo(g_actual);
+        const auto& defectoCat = Catalogo(DEFECTO);
+        auto it = actualCat.find(clave);
+        if (it != actualCat.end()) return Sustituir(it->second, clave, args);
+        it = defectoCat.find(clave);
+        if (it != defectoCat.end()) return Sustituir(it->second, clave, args);
+        return defecto;
+    }
+}
+
+// ============================================================================
 // 6. PUNTUACIÓN Y EVALUACIÓN DE CADA COMPROBACIÓN
 // ============================================================================
 
@@ -728,6 +939,7 @@ CabeceraResultado EvaluarCookies(const RespuestaHttp& resp) {
     if (galletas.empty()) {
         c.aplicable = false;
         c.presente = true;
+        c.valorClave = L"value.no_cookies";
         c.valor = L"La web no envía cookies en esta respuesta";
         return c;
     }
@@ -759,6 +971,11 @@ CabeceraResultado EvaluarCookies(const RespuestaHttp& resp) {
                galletas.size(), sinSecure, sinHttpOnly, sinSameSite);
     c.valor = valor;
     c.presente = (c.penalizacion == 0);
+    c.valorClave = L"value.cookies";
+    c.valorArgs = { { L"total", std::to_wstring(galletas.size()) },
+                    { L"secure", std::to_wstring(sinSecure) },
+                    { L"httponly", std::to_wstring(sinHttpOnly) },
+                    { L"samesite", std::to_wstring(sinSameSite) } };
 
     if (sinSecure > 0)        c.aviso = L"Hay cookies que se enviarían también por HTTP sin cifrar.";
     else if (sinHttpOnly > 0) c.aviso = L"Hay cookies legibles desde JavaScript (riesgo si existe XSS).";
@@ -782,13 +999,17 @@ CabeceraResultado EvaluarCors(const RespuestaHttp& resp) {
     if (!tieneOrigen) {
         c.aplicable = false;
         c.presente = true;
+        c.valorClave = L"value.no_cors";
         c.valor = L"No se envía cabecera Access-Control-Allow-Origin";
         return c;
     }
 
     std::wstring cred = Minusculas(Trim(credenciales));
+    c.valorClave = L"value.cors";
     c.valor = L"Access-Control-Allow-Origin: " + origen;
     if (tieneCredenciales) c.valor += L" | Credenciales: " + (credenciales.empty() ? L"?" : credenciales);
+    c.valorArgs = { { L"origin", origen },
+                    { L"credentials", tieneCredenciales ? (credenciales.empty() ? L"?" : credenciales) : L"-" } };
 
     if (origen == L"*") {
         if (cred == L"true") {
@@ -1271,6 +1492,7 @@ CabeceraResultado EvaluarTls(const RespuestaHttp& resp) {
 
     if (!resp.https) {
         c.aplicable = false;
+        c.valorClave = L"value.no_https";
         c.valor = L"El sitio no usa HTTPS";
         return c;
     }
@@ -1297,6 +1519,11 @@ CabeceraResultado EvaluarTls(const RespuestaHttp& resp) {
     if (resp.aceptaTlsObsoleto) valor += L" | Acepta TLS 1.0/1.1";
     c.valor = valor;
     c.presente = (c.penalizacion == 0);
+    c.valorClave = L"value.tls_ok";
+    c.valorArgs = { { L"protocol", protocolo },
+                    { L"days", resp.diasCertificado >= 0 ? std::to_wstring(resp.diasCertificado) : L"-" },
+                    { L"issuer", resp.emisorTls },
+                    { L"legacy", resp.aceptaTlsObsoleto ? L"1" : L"0" } };
 
     for (size_t i = 0; i < avisos.size(); ++i) {
         if (i) c.aviso += L" ";
@@ -1316,6 +1543,7 @@ CabeceraResultado EvaluarRedireccionHttps(HINTERNET hSession, const RespuestaHtt
     if (!resp.https) {
         c.presente = false;
         c.penalizacion = 100;
+        c.valorClave = L"value.insecure_site";
         c.valor = L"La web se sirve por HTTP sin cifrar";
         c.aviso = L"Todo el tráfico viaja sin cifrar y puede ser leído o modificado.";
         return c;
@@ -1328,6 +1556,7 @@ CabeceraResultado EvaluarRedireccionHttps(HINTERNET hSession, const RespuestaHtt
     uc.lpszUrlPath = ruta;   uc.dwUrlPathLength = 4096;
     if (!WinHttpCrackUrl(resp.urlFinal.c_str(), 0, 0, &uc) || uc.nPort != INTERNET_DEFAULT_HTTPS_PORT) {
         c.aplicable = false;
+        c.valorClave = L"value.https_nonstandard";
         c.valor = L"No se puede comprobar: el sitio usa un puerto HTTPS no estándar";
         return c;
     }
@@ -1339,11 +1568,13 @@ CabeceraResultado EvaluarRedireccionHttps(HINTERNET hSession, const RespuestaHtt
     if (!HacerPeticion(hSession, urlHttp, 0, sonda)) {
         if (sonda.errorCodigo == L"conexion" || sonda.errorCodigo == L"dns" || sonda.errorCodigo == L"timeout") {
             c.presente = true;
+            c.valorClave = L"value.http_closed";
             c.valor = L"El puerto 80 no responde: solo se sirve contenido por HTTPS";
             return c;
         }
         c.presente = false;
         c.penalizacion = 40;
+        c.valorClave = L"value.http_probe_failed";
         c.valor = L"No se pudo comprobar la versión HTTP del sitio";
         c.aviso = sonda.errorMensaje;
         return c;
@@ -1355,11 +1586,15 @@ CabeceraResultado EvaluarRedireccionHttps(HINTERNET hSession, const RespuestaHtt
     if (sonda.status >= 300 && sonda.status < 400) {
         if (Minusculas(ubicacion).rfind(L"https://", 0) == 0) {
             c.presente = true;
+            c.valorClave = L"value.http_redirect";
+            c.valorArgs = { { L"status", std::to_wstring(sonda.status) }, { L"url", ubicacion } };
             c.valor = L"HTTP responde " + std::to_wstring(sonda.status) + L" y redirige a " + ubicacion;
             return c;
         }
         c.presente = false;
         c.penalizacion = 60;
+        c.valorClave = L"value.http_redirect";
+        c.valorArgs = { { L"status", std::to_wstring(sonda.status) }, { L"url", ubicacion } };
         c.valor = L"HTTP responde " + std::to_wstring(sonda.status) + L" y redirige a " + ubicacion;
         c.aviso = L"La redirección no lleva a HTTPS.";
         return c;
@@ -1368,12 +1603,16 @@ CabeceraResultado EvaluarRedireccionHttps(HINTERNET hSession, const RespuestaHtt
     if (sonda.status >= 400) {
         c.aplicable = false;
         c.presente = true;
+        c.valorClave = L"value.http_unknown";
+        c.valorArgs = { { L"status", std::to_wstring(sonda.status) } };
         c.valor = L"HTTP responde " + std::to_wstring(sonda.status) + L"; no se puede determinar si redirige";
         return c;
     }
 
     c.presente = false;
     c.penalizacion = 100;
+    c.valorClave = L"value.http_no_redirect";
+    c.valorArgs = { { L"status", std::to_wstring(sonda.status) } };
     c.valor = L"HTTP responde " + std::to_wstring(sonda.status) + L" sin redirigir a HTTPS";
     c.aviso = L"El contenido también se sirve sin cifrar; fuerza la redirección a HTTPS.";
     return c;
@@ -1547,9 +1786,8 @@ void CargarHistorialEnTabla() {
         swprintf_s(statusBuf, L"%d %s", elem.statusCode, elem.reason.c_str());
         ListView_SetItemText(hHistTree, index, 2, statusBuf);
 
-        wchar_t diagBuf[96];
-        swprintf_s(diagBuf, L"Nota: %s (%d%%)", elem.calificacion.c_str(), (int)std::lround(elem.porcentaje));
-        ListView_SetItemText(hHistTree, index, 3, diagBuf);
+        std::wstring nota = L10n::Tr(L"hist.grade_value", { { L"grade", elem.calificacion }, { L"pct", std::to_wstring((int)std::lround(elem.porcentaje)) } });
+        ListView_SetItemText(hHistTree, index, 3, (LPWSTR)nota.c_str());
 
         index++;
     }
@@ -1614,20 +1852,98 @@ std::wstring JsonDeResultado(const AnalisisResultado& r, bool incluirSoftware) {
 
 // Texto de estado mostrado en la interfaz y en los informes
 void EstadoDeItem(const CabeceraResultado& item, std::wstring& texto, COLORREF& color) {
-    if (!item.aplicable) { texto = L"NO APLICA"; color = RGB(108, 117, 125); return; }
+    if (!item.aplicable) { texto = L10n::Tr(L"state.not_applicable"); color = RGB(108, 117, 125); return; }
     if (item.peso <= 0) {
-        texto = item.presente ? L"INFORMATIVA · CONFIGURADA" : L"INFORMATIVA · NO CONFIGURADA";
+        texto = item.presente ? L10n::Tr(L"state.info_on") : L10n::Tr(L"state.info_off");
         color = item.presente ? RGB(13, 110, 253) : RGB(108, 117, 125);
         return;
     }
     if (!item.presente) {
-        texto = item.clave.empty() ? L"NO CUMPLE" : L"AUSENTE";
+        texto = item.clave.empty() ? L10n::Tr(L"state.failed") : L10n::Tr(L"state.missing");
         color = RGB(220, 53, 69);
         return;
     }
-    if (CalidadItem(item) < 100) { texto = L"DÉBIL"; color = RGB(253, 126, 20); return; }
-    texto = L"CONFIGURADA";
+    if (CalidadItem(item) < 100) { texto = L10n::Tr(L"state.weak"); color = RGB(253, 126, 20); return; }
+    texto = L10n::Tr(L"state.configured");
     color = RGB(10, 128, 66);
+}
+
+// Clave de traducción de los avisos generados por la aplicación (texto -> clave)
+std::wstring ClaveAviso(const std::wstring& texto) {
+    static const std::map<std::wstring, std::wstring> mapa = {
+        { L"HSTS solo protege las conexiones HTTPS y el sitio se ha consultado por HTTP.", L"hsts.http" },
+        { L"No declara max-age; los navegadores ignoran la política.", L"hsts.no_max_age" },
+        { L"max-age=0 desactiva HSTS en la práctica.", L"hsts.zero" },
+        { L"max-age inferior a 6 meses (recomendado 15552000 o más).", L"hsts.short" },
+        { L"No incluye includeSubDomains; los subdominios no quedan protegidos.", L"hsts.no_subdomains" },
+        { L"Permite 'unsafe-inline' y 'unsafe-eval'; reduce mucho la protección frente a XSS.", L"csp.inline_eval" },
+        { L"Permite 'unsafe-inline'; reduce la protección frente a XSS.", L"csp.inline" },
+        { L"Permite 'unsafe-eval'; permite ejecutar código generado en tiempo de ejecución.", L"csp.eval" },
+        { L"Incluye el comodín '*' y admite recursos de cualquier origen.", L"csp.wildcard" },
+        { L"ALLOWALL desactiva la protección frente a Clickjacking.", L"xfo.allowall" },
+        { L"ALLOW-FROM ya no lo admiten los navegadores modernos; usa CSP frame-ancestors.", L"xfo.allowfrom" },
+        { L"Valor no reconocido; debería ser DENY o SAMEORIGIN.", L"xfo.invalid" },
+        { L"El único valor válido es nosniff.", L"xcto.not_nosniff" },
+        { L"unsafe-url envía la URL completa a sitios externos.", L"referrer.unsafe" },
+        { L"Configuración heredada; se recomienda strict-origin-when-cross-origin.", L"referrer.legacy" },
+        { L"El comodín '*' deja las funciones abiertas a cualquier origen.", L"permissions.wildcard" },
+        { L"unsafe-none no aísla la ventana frente a otros orígenes.", L"coop.unsafe_none" },
+        { L"unsafe-none permite cargar recursos cruzados sin permiso explícito.", L"coep.unsafe_none" },
+        { L"Permite almacenar la respuesta en caché; revísalo si sirve contenido sensible.", L"cache.permissive" },
+        { L"La versión de TLS negociada está obsoleta; debería ser TLS 1.2 o superior.", L"tls.obsolete" },
+        { L"El servidor completa el saludo TLS 1.0/1.1; debería rechazar versiones obsoletas.", L"tls.legacy" },
+        { L"El certificado caduca en menos de 30 días.", L"tls.expiring" },
+        { L"Hay cookies que se enviarían también por HTTP sin cifrar.", L"cookies.no_secure" },
+        { L"Hay cookies legibles desde JavaScript (riesgo si existe XSS).", L"cookies.no_httponly" },
+        { L"Hay cookies sin SameSite; pueden viajar en peticiones de otros sitios (CSRF).", L"cookies.no_samesite" },
+        { L"Permite cualquier origen con credenciales: cualquier web podría leer datos autenticados.", L"cors.wildcard_credentials" },
+        { L"Permite cualquier origen (*); revisa si expone información privada.", L"cors.wildcard" },
+        { L"Todo el tráfico viaja sin cifrar y puede ser leído o modificado.", L"https.insecure" },
+        { L"El contenido también se sirve sin cifrar; fuerza la redirección a HTTPS.", L"https.no_redirect" },
+        { L"La redirección no lleva a HTTPS.", L"https.no_redirect" },
+    };
+    auto it = mapa.find(texto);
+    return (it == mapa.end()) ? L"" : it->second;
+}
+
+std::wstring NombreItem(const CabeceraResultado& item) {
+    return L10n::TrOr(L"check." + item.id + L".name", item.nombre);
+}
+
+std::wstring DescItem(const CabeceraResultado& item) {
+    return L10n::TrOr(L"check." + item.id + L".desc", item.desc);
+}
+
+std::wstring AvisoItem(const CabeceraResultado& item) {
+    std::wstring clave = item.avisoClave;
+    if (clave.empty()) clave = ClaveAviso(item.aviso);
+    if (clave.empty()) return item.aviso;
+    return L10n::TrOr(L"aviso." + clave, item.aviso);
+}
+
+std::wstring ValorItem(const CabeceraResultado& item) {
+    if (item.valorClave.empty()) return item.valor;
+    std::vector<std::pair<std::wstring, std::wstring>> args = item.valorArgs;
+    if (item.valorClave == L"value.tls_ok") {
+        std::wstring legacy;
+        for (const auto& a : item.valorArgs) if (a.first == L"legacy" && a.second == L"1") legacy = L"1";
+        args.erase(std::remove_if(args.begin(), args.end(),
+                                  [](const std::pair<std::wstring, std::wstring>& a) { return a.first == L"legacy"; }),
+                   args.end());
+        args.emplace_back(L"legacy", legacy.empty() ? L"" : (L" | " + L10n::Tr(L"value.tls_legacy")));
+    }
+    return L10n::TrOr(item.valorClave, item.valor, args);
+}
+
+std::wstring CritItem(const CabeceraResultado& item) {
+    std::wstring c = item.criticidad;
+    for (auto& ch : c) ch = (wchar_t)towupper(ch);
+    if (c == L"CRÍTICA" || c == L"CRITICA") return L10n::Tr(L"crit.critical");
+    if (c == L"ALTA") return L10n::Tr(L"crit.high");
+    if (c == L"MEDIA") return L10n::Tr(L"crit.medium");
+    if (c == L"BAJA") return L10n::Tr(L"crit.low");
+    if (c == L"INFORMATIVA") return L10n::Tr(L"crit.info");
+    return item.criticidad;
 }
 
 void ExportarJSON() {
@@ -1645,10 +1961,10 @@ void ExportarJSON() {
     if (!GetSaveFileName(&ofn)) return;
 
     if (!EscribirArchivoUtf8(szFileName, JsonDeResultado(g_ultimoResultado, true) + L"\n")) {
-        MessageBox(hMainWnd, L"No se pudo escribir el archivo JSON.", L"Error", MB_OK | MB_ICONERROR);
+        MessageBox(hMainWnd, L10n::Tr(L"err.write_file").c_str(), L10n::Tr(L"dlg.error").c_str(), MB_OK | MB_ICONERROR);
         return;
     }
-    MessageBox(hMainWnd, L"Informe exportado a JSON correctamente.", L"Éxito", MB_OK | MB_ICONINFORMATION);
+    MessageBox(hMainWnd, L10n::Tr(L"export.json_ok").c_str(), L10n::Tr(L"dlg.success").c_str(), MB_OK | MB_ICONINFORMATION);
 }
 
 // Escapa un campo CSV entre comillas
@@ -1698,10 +2014,10 @@ void ExportarCSV() {
     }
 
     if (!EscribirArchivoUtf8(szFileName, csv.str(), true)) {
-        MessageBox(hMainWnd, L"No se pudo escribir el archivo CSV.", L"Error", MB_OK | MB_ICONERROR);
+        MessageBox(hMainWnd, L10n::Tr(L"err.write_file").c_str(), L10n::Tr(L"dlg.error").c_str(), MB_OK | MB_ICONERROR);
         return;
     }
-    MessageBox(hMainWnd, L"Informe exportado a CSV correctamente.", L"Éxito", MB_OK | MB_ICONINFORMATION);
+    MessageBox(hMainWnd, L10n::Tr(L"export.csv_ok").c_str(), L10n::Tr(L"dlg.success").c_str(), MB_OK | MB_ICONINFORMATION);
 }
 
 // Genera un archivo PDF nativo utilizando la impresora virtual "Microsoft Print to PDF"
@@ -1730,12 +2046,13 @@ void ExportarPDFNativo() {
     HDC hdcPrinter = CreateDC(L"WINSPOOL", L"Microsoft Print to PDF", NULL, NULL);
     if (!hdcPrinter) {
         if (g_rutaPdfForzada.empty())
-            MessageBox(hMainWnd, L"No se pudo acceder a 'Microsoft Print to PDF'.", L"Error al Exportar", MB_OK | MB_ICONERROR);
+            MessageBox(hMainWnd, L10n::Tr(L"err.pdf_printer").c_str(), L10n::Tr(L"export.pdf_title").c_str(), MB_OK | MB_ICONERROR);
         return;
     }
 
+    std::wstring tituloPdf = L10n::Tr(L"pdf.title");
     DOCINFO di = { sizeof(DOCINFO) };
-    di.lpszDocName = L"Informe de Auditoría de Seguridad HTTP";
+    di.lpszDocName = tituloPdf.c_str();
     di.lpszOutput = rutaSalida.c_str();
 
     if (StartDoc(hdcPrinter, &di) > 0) {
@@ -1769,11 +2086,12 @@ void ExportarPDFNativo() {
             std::wstring linea = std::wstring(COPYRIGHT) + L" · " + CORREO;
             TextOut(hdcPrinter, marginX, pageH - MulDiv(26, logPixelsY, 72), linea.c_str(), (int)linea.length());
 
-            std::wstring programa = std::wstring(L"Auditor de Seguridad HTTP ") + VERSION_APP + L" - informe automático";
+            std::wstring programa = L10n::Tr(L"pdf.footer", { { L"version", VERSION_APP } });
             TextOut(hdcPrinter, marginX, pageH - MulDiv(16, logPixelsY, 72), programa.c_str(), (int)programa.length());
 
             wchar_t pag[64];
-            swprintf_s(pag, L"Página %d", pagina);
+            std::wstring paginaTxt = L10n::Tr(L"pdf.page", { { L"page", std::to_wstring(pagina) } });
+            wcscpy_s(pag, paginaTxt.c_str());
             SIZE sz;
             GetTextExtentPoint32(hdcPrinter, pag, lstrlen(pag), &sz);
             TextOut(hdcPrinter, pageW - marginX - sz.cx, pageH - MulDiv(26, logPixelsY, 72), pag, lstrlen(pag));
@@ -1781,8 +2099,7 @@ void ExportarPDFNativo() {
 
         SelectObject(hdcPrinter, hFontPdfTitle);
         SetTextColor(hdcPrinter, RGB(24, 52, 106));
-        const wchar_t* titulo = L"Informe de Auditoría de Seguridad HTTP";
-        TextOut(hdcPrinter, marginX, y, titulo, lstrlen(titulo));
+        TextOut(hdcPrinter, marginX, y, tituloPdf.c_str(), (int)tituloPdf.length());
         y += MulDiv(26, logPixelsY, 72);
 
         auto DibujarMeta = [&](const wchar_t* label, const std::wstring& val) {
@@ -1796,31 +2113,34 @@ void ExportarPDFNativo() {
             y += MulDiv(14, logPixelsY, 72);
         };
 
-        DibujarMeta(L"Sitio Web Analizado: ", g_ultimoResultado.url);
-        DibujarMeta(L"Fecha de Inspección: ", g_ultimoResultado.fecha);
+        DibujarMeta(L10n::Tr(L"pdf.site").c_str(), g_ultimoResultado.url);
+        DibujarMeta(L10n::Tr(L"pdf.date").c_str(), g_ultimoResultado.fecha);
 
         wchar_t statusBuf[128];
         swprintf_s(statusBuf, L"%d %s", g_ultimoResultado.statusCode, g_ultimoResultado.reason.c_str());
-        DibujarMeta(L"Código de Respuesta: ", statusBuf);
-        DibujarMeta(L"Servidor / Proxy: ", g_ultimoResultado.server);
+        DibujarMeta(L10n::Tr(L"pdf.status").c_str(), statusBuf);
+        DibujarMeta(L10n::Tr(L"pdf.server").c_str(), g_ultimoResultado.server);
 
-        std::wstring cifrado = g_ultimoResultado.https ? L"HTTPS" : L"HTTP sin cifrar";
+        std::wstring cifrado = g_ultimoResultado.https ? L10n::Tr(L"pdf.crypto_https") : L10n::Tr(L"pdf.crypto_http");
         if (!g_ultimoResultado.tlsProtocolo.empty()) cifrado += L" (TLS: " + g_ultimoResultado.tlsProtocolo + L")";
-        DibujarMeta(L"Cifrado: ", cifrado);
+        DibujarMeta(L10n::Tr(L"pdf.crypto").c_str(), cifrado);
 
-        wchar_t reqBuf[256];
-        swprintf_s(reqBuf, L"%s — %d%% de calidad (%.1f de %.0f puntos, %d de %d comprobaciones)",
-                   g_ultimoResultado.calificacion.c_str(), (int)std::lround(g_ultimoResultado.porcentaje),
-                   g_ultimoResultado.puntos, g_ultimoResultado.puntosMax,
-                   g_ultimoResultado.presentes, g_ultimoResultado.aplicables);
-        DibujarMeta(L"Nota de Seguridad: ", reqBuf);
+        std::wstring reqBuf = L10n::Tr(L"pdf.grade_value", {
+            { L"grade", g_ultimoResultado.calificacion },
+            { L"pct", std::to_wstring((int)std::lround(g_ultimoResultado.porcentaje)) },
+            { L"points", FormatearDecimal(g_ultimoResultado.puntos, 1) },
+            { L"max", FormatearDecimal(g_ultimoResultado.puntosMax, 0) },
+            { L"ok", std::to_wstring(g_ultimoResultado.presentes) },
+            { L"total", std::to_wstring(g_ultimoResultado.aplicables) }
+        });
+        DibujarMeta(L10n::Tr(L"pdf.grade").c_str(), reqBuf);
 
         y += MulDiv(12, logPixelsY, 72);
 
         SelectObject(hdcPrinter, hFontPdfH2);
         SetTextColor(hdcPrinter, RGB(44, 62, 80));
-        const wchar_t* subtitulo = L"Evaluación Detallada";
-        TextOut(hdcPrinter, marginX, y, subtitulo, lstrlen(subtitulo));
+        std::wstring subtitulo = L10n::Tr(L"pdf.section");
+        TextOut(hdcPrinter, marginX, y, subtitulo.c_str(), (int)subtitulo.length());
         y += MulDiv(18, logPixelsY, 72);
 
         int tableW = pageW - (2 * marginX);
@@ -1849,10 +2169,14 @@ void ExportarPDFNativo() {
             RECT r3 = { x3 + padX, curY, x4 - padX, curY + hHdr };
             RECT r4 = { x4 + padX, curY, x1 + tableW - padX, curY + hHdr };
 
-            DrawText(hdcPrinter, L"Comprobación", -1, &r1, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            DrawText(hdcPrinter, L"Estado", -1, &r2, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            DrawText(hdcPrinter, L"Criticidad", -1, &r3, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            DrawText(hdcPrinter, L"Valor Detectado en Servidor", -1, &r4, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            std::wstring h1 = L10n::Tr(L"pdf.col.check");
+            std::wstring h2 = L10n::Tr(L"pdf.col.state");
+            std::wstring h3 = L10n::Tr(L"pdf.col.criticality");
+            std::wstring h4 = L10n::Tr(L"pdf.col.value");
+            DrawText(hdcPrinter, h1.c_str(), -1, &r1, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            DrawText(hdcPrinter, h2.c_str(), -1, &r2, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            DrawText(hdcPrinter, h3.c_str(), -1, &r3, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            DrawText(hdcPrinter, h4.c_str(), -1, &r4, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
             return curY + hHdr;
         };
@@ -1867,24 +2191,25 @@ void ExportarPDFNativo() {
 
             std::wstring estadoCompleto = estado;
             if (item.peso <= 0) {
-                estadoCompleto = L"INFORMATIVA";
+                estadoCompleto = L10n::Tr(L"state.info");
             } else if (item.aplicable) {
-                wchar_t calidadTxt[32];
-                swprintf_s(calidadTxt, L" (%d%%)", CalidadItem(item));
-                estadoCompleto += calidadTxt;
+                estadoCompleto += L" " + L10n::Tr(L"pdf.quality", { { L"quality", std::to_wstring(CalidadItem(item)) } });
             }
 
             RECT calcNom = { 0, 0, col1W - (padX * 2), 0 };
             SelectObject(hdcPrinter, hFontPdfBold);
-            DrawText(hdcPrinter, item.nombre.c_str(), -1, &calcNom, DT_CALCRECT | DT_WORDBREAK);
+            std::wstring nombrePdfCalc = NombreItem(item);
+            DrawText(hdcPrinter, nombrePdfCalc.c_str(), -1, &calcNom, DT_CALCRECT | DT_WORDBREAK);
             int altoNom = calcNom.bottom - calcNom.top;
 
             RECT calcDesc = { 0, 0, col1W - (padX * 2), 0 };
             SelectObject(hdcPrinter, hFontPdfNorm);
-            DrawText(hdcPrinter, item.desc.c_str(), -1, &calcDesc, DT_CALCRECT | DT_WORDBREAK);
+            std::wstring descPdfCalc = DescItem(item);
+            DrawText(hdcPrinter, descPdfCalc.c_str(), -1, &calcDesc, DT_CALCRECT | DT_WORDBREAK);
             int altoDesc = calcDesc.bottom - calcDesc.top;
 
-            std::wstring textoAviso = item.aviso.empty() ? L"" : (L"Observación: " + item.aviso);
+            std::wstring avisoPdf = AvisoItem(item);
+            std::wstring textoAviso = avisoPdf.empty() ? L"" : L10n::Tr(L"pdf.observation", { { L"text", avisoPdf } });
             int altoAviso = 0;
             if (!textoAviso.empty()) {
                 RECT calcAviso = { 0, 0, col1W - (padX * 2), 0 };
@@ -1894,7 +2219,8 @@ void ExportarPDFNativo() {
 
             RECT calcValRc = { 0, 0, col4W - (padX * 2), 0 };
             SelectObject(hdcPrinter, hFontPdfCode);
-            DrawText(hdcPrinter, item.valor.c_str(), -1, &calcValRc, DT_CALCRECT | DT_WORDBREAK);
+            std::wstring valorPdfCalc = ValorItem(item);
+            DrawText(hdcPrinter, valorPdfCalc.c_str(), -1, &calcValRc, DT_CALCRECT | DT_WORDBREAK);
 
             int hCol1 = altoNom + altoDesc + altoAviso + MulDiv(16, logPixelsY, 72);
             int hVal = (calcValRc.bottom - calcValRc.top) + MulDiv(16, logPixelsY, 72);
@@ -1929,12 +2255,12 @@ void ExportarPDFNativo() {
             SelectObject(hdcPrinter, hFontPdfBold);
             SetTextColor(hdcPrinter, RGB(30, 30, 30));
             RECT nomRc = { x1 + padX, y + 4, x2 - padX, y + 4 + altoNom };
-            DrawText(hdcPrinter, item.nombre.c_str(), -1, &nomRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+            DrawText(hdcPrinter, nombrePdfCalc.c_str(), -1, &nomRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
             SelectObject(hdcPrinter, hFontPdfNorm);
             SetTextColor(hdcPrinter, RGB(80, 80, 80));
             RECT descBox = { x1 + padX, y + 4 + altoNom + 2, x2 - padX, y + 4 + altoNom + 2 + altoDesc };
-            DrawText(hdcPrinter, item.desc.c_str(), -1, &descBox, DT_LEFT | DT_TOP | DT_WORDBREAK);
+            DrawText(hdcPrinter, descPdfCalc.c_str(), -1, &descBox, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
             if (!textoAviso.empty()) {
                 SetTextColor(hdcPrinter, RGB(184, 134, 11));
@@ -1950,12 +2276,13 @@ void ExportarPDFNativo() {
             SelectObject(hdcPrinter, hFontPdfNorm);
             SetTextColor(hdcPrinter, RGB(30, 30, 30));
             RECT c3Rc = { x3 + padX, y + 4, x4 - padX, y + rowH - 4 };
-            DrawText(hdcPrinter, item.criticidad.c_str(), -1, &c3Rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+            std::wstring critPdf = CritItem(item);
+            DrawText(hdcPrinter, critPdf.c_str(), -1, &c3Rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
             SelectObject(hdcPrinter, hFontPdfCode);
             SetTextColor(hdcPrinter, RGB(34, 34, 34));
             RECT c4Rc = { x4 + padX, y + 4, x1 + tableW - padX, y + rowH - 4 };
-            DrawText(hdcPrinter, item.valor.c_str(), -1, &c4Rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+            DrawText(hdcPrinter, valorPdfCalc.c_str(), -1, &c4Rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
             y += rowH;
         }
@@ -1964,8 +2291,8 @@ void ExportarPDFNativo() {
         y += MulDiv(14, logPixelsY, 72);
         SelectObject(hdcPrinter, hFontPdfSmall);
         SetTextColor(hdcPrinter, RGB(102, 102, 102));
-        const wchar_t* nota = L"La nota pondera la criticidad de cada comprobación y la calidad del valor configurado.";
-        TextOut(hdcPrinter, marginX, y, nota, lstrlen(nota));
+        std::wstring nota = L10n::Tr(L"pdf.note");
+        TextOut(hdcPrinter, marginX, y, nota.c_str(), (int)nota.length());
         y += MulDiv(12, logPixelsY, 72);
 
         SelectObject(hdcPrinter, hFontPdfNorm);
@@ -1985,7 +2312,7 @@ void ExportarPDFNativo() {
 
         EndDoc(hdcPrinter);
         if (g_rutaPdfForzada.empty())
-            MessageBox(hMainWnd, L"El informe PDF se ha generado correctamente.", L"Éxito", MB_OK | MB_ICONINFORMATION);
+            MessageBox(hMainWnd, L10n::Tr(L"export.pdf_ok").c_str(), L10n::Tr(L"dlg.success").c_str(), MB_OK | MB_ICONINFORMATION);
     }
     DeleteDC(hdcPrinter);
 }
@@ -1996,11 +2323,11 @@ void ExportarPDFNativo() {
 void BorrarItemSeleccionado() {
     int selIdx = ListView_GetNextItem(hHistTree, -1, LVNI_SELECTED);
     if (selIdx < 0 || selIdx >= (int)g_historialCompleto.size()) {
-        MessageBox(hMainWnd, L"Por favor, selecciona un registro del historial para borrar.", L"Atención", MB_OK | MB_ICONWARNING);
+        MessageBox(hMainWnd, L10n::Tr(L"hist.select_first").c_str(), L10n::Tr(L"dlg.attention").c_str(), MB_OK | MB_ICONWARNING);
         return;
     }
 
-    if (MessageBox(hMainWnd, L"¿Estás seguro de que deseas eliminar el registro seleccionado?", L"Confirmar eliminación", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+    if (MessageBox(hMainWnd, L10n::Tr(L"hist.confirm_delete").c_str(), L10n::Tr(L"hist.confirm_delete_title").c_str(), MB_YESNO | MB_ICONQUESTION) == IDYES) {
         g_historialCompleto.erase(g_historialCompleto.begin() + selIdx);
         GuardarHistorialDisco();
         CargarHistorialEnTabla();
@@ -2009,11 +2336,11 @@ void BorrarItemSeleccionado() {
 
 void LimpiarTodoHistorial() {
     if (g_historialCompleto.empty()) {
-        MessageBox(hMainWnd, L"El historial ya está vacío.", L"Atención", MB_OK | MB_ICONINFORMATION);
+        MessageBox(hMainWnd, L10n::Tr(L"hist.empty").c_str(), L10n::Tr(L"dlg.attention").c_str(), MB_OK | MB_ICONINFORMATION);
         return;
     }
 
-    if (MessageBox(hMainWnd, L"¿Estás seguro de que deseas limpiar todo el historial de registros?", L"Confirmar limpieza", MB_YESNO | MB_ICONWARNING) == IDYES) {
+    if (MessageBox(hMainWnd, L10n::Tr(L"hist.confirm_clear").c_str(), L10n::Tr(L"hist.confirm_clear_title").c_str(), MB_YESNO | MB_ICONWARNING) == IDYES) {
         g_historialCompleto.clear();
         GuardarHistorialDisco();
         CargarHistorialEnTabla();
@@ -2023,14 +2350,14 @@ void LimpiarTodoHistorial() {
 void RestaurarCopiaHistorial() {
     std::wstring contenido = LeerArchivoTexto(RutaCopiaHistorial());
     if (contenido.empty()) {
-        MessageBox(hMainWnd, L"Todavía no hay ninguna copia de seguridad del historial.", L"Historial", MB_OK | MB_ICONINFORMATION);
+        MessageBox(hMainWnd, L10n::Tr(L"hist.no_backup").c_str(), L10n::Tr(L"dlg.info").c_str(), MB_OK | MB_ICONINFORMATION);
         return;
     }
 
     JsonValor raiz;
     JsonParser parser(contenido);
     if (!parser.Parsear(raiz) || raiz.tipo != JsonValor::LISTA) {
-        MessageBox(hMainWnd, L"La copia de seguridad no tiene un formato válido.", L"Historial", MB_OK | MB_ICONERROR);
+        MessageBox(hMainWnd, L10n::Tr(L"hist.backup_invalid").c_str(), L10n::Tr(L"dlg.error").c_str(), MB_OK | MB_ICONERROR);
         return;
     }
 
@@ -2082,34 +2409,30 @@ void RestaurarCopiaHistorial() {
     }
 
     if (nuevos.empty()) {
-        MessageBox(hMainWnd, L"La copia de seguridad no contiene registros que falten.", L"Historial", MB_OK | MB_ICONINFORMATION);
+        MessageBox(hMainWnd, L10n::Tr(L"hist.backup_nothing").c_str(), L10n::Tr(L"dlg.info").c_str(), MB_OK | MB_ICONINFORMATION);
         return;
     }
 
-    wchar_t pregunta[256];
-    swprintf_s(pregunta, L"Se van a recuperar %zu registros de la copia de seguridad.\n¿Continuar?", nuevos.size());
-    if (MessageBox(hMainWnd, pregunta, L"Restaurar copia", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    std::wstring pregunta = L10n::Tr(L"hist.restore_question", { { L"count", std::to_wstring(nuevos.size()) } });
+    if (MessageBox(hMainWnd, pregunta.c_str(), L10n::Tr(L"hist.restore_title").c_str(), MB_YESNO | MB_ICONQUESTION) != IDYES) return;
 
     for (const auto& item : nuevos) g_historialCompleto.push_back(item);
     if (g_historialCompleto.size() > 30) g_historialCompleto.resize(30);
     GuardarHistorialDisco();
     CargarHistorialEnTabla();
 
-    swprintf_s(pregunta, L"Se han recuperado %zu registros.", nuevos.size());
-    MessageBox(hMainWnd, pregunta, L"Historial", MB_OK | MB_ICONINFORMATION);
+    std::wstring recuperados = L10n::Tr(L"hist.restored", { { L"count", std::to_wstring(nuevos.size()) } });
+    MessageBox(hMainWnd, recuperados.c_str(), L10n::Tr(L"dlg.info").c_str(), MB_OK | MB_ICONINFORMATION);
 }
 
 void MostrarAcercaDe() {
-    std::wstring mensaje =
-        std::wstring(L"Auditor de Seguridad HTTP ") + VERSION_APP + L"\n\n"
-        L"Análisis de cabeceras de seguridad, TLS, cookies y CORS con informe exportable.\n\n"
-        L"Autor: " + AUTOR + L"\n"
-        L"Correo: " + CORREO + L"\n" +
-        COPYRIGHT + L"\n"
-        L"Licencia: MIT\n\n"
-        L"El historial se guarda en historial_auditorias.json y se conserva una copia\n"
-        L"del estado anterior en historial_auditorias.bak.json.";
-    MessageBox(hMainWnd, mensaje.c_str(), L"Acerca de", MB_OK | MB_ICONINFORMATION);
+    std::wstring mensaje = L10n::Tr(L"about.text", {
+        { L"version", VERSION_APP },
+        { L"author", AUTOR },
+        { L"email", CORREO },
+        { L"copyright", COPYRIGHT }
+    });
+    MessageBox(hMainWnd, mensaje.c_str(), L10n::Tr(L"about.title").c_str(), MB_OK | MB_ICONINFORMATION);
 }
 
 // ============================================================================
@@ -2117,7 +2440,7 @@ void MostrarAcercaDe() {
 // ============================================================================
 void EjecutarLotesNativo() {
     if (g_analizando || g_loteEnCurso) {
-        MessageBox(hMainWnd, L"Ya hay un análisis en curso. Espera a que termine.", L"Lotes", MB_OK | MB_ICONINFORMATION);
+        MessageBox(hMainWnd, L10n::Tr(L"err.busy").c_str(), L10n::Tr(L"form.batch").c_str(), MB_OK | MB_ICONINFORMATION);
         return;
     }
 
@@ -2134,7 +2457,7 @@ void EjecutarLotesNativo() {
 
     std::wstring contenido = LeerArchivoTexto(szFileName);
     if (contenido.empty()) {
-        MessageBox(hMainWnd, L"No se pudo abrir el archivo de lotes.", L"Error", MB_OK | MB_ICONERROR);
+        MessageBox(hMainWnd, L10n::Tr(L"err.batch_open").c_str(), L10n::Tr(L"dlg.error").c_str(), MB_OK | MB_ICONERROR);
         return;
     }
 
@@ -2147,7 +2470,7 @@ void EjecutarLotesNativo() {
     }
 
     if (urlsLote.empty()) {
-        MessageBox(hMainWnd, L"El archivo no contiene URLs válidas.", L"Atención", MB_OK | MB_ICONWARNING);
+        MessageBox(hMainWnd, L10n::Tr(L"batch.empty").c_str(), L10n::Tr(L"dlg.attention").c_str(), MB_OK | MB_ICONWARNING);
         return;
     }
 
@@ -2182,7 +2505,7 @@ void EjecutarLotesNativo() {
         PostMessage(hMainWnd, WM_LOTES_COMPLETO, 0, (LPARAM)paquete);
     }).detach();
 
-    MessageBox(hMainWnd, L"La auditoría por lotes se está ejecutando en segundo plano.\nAl terminar se mostrará un resumen.", L"Procesando Lotes", MB_OK | MB_ICONINFORMATION);
+    MessageBox(hMainWnd, L10n::Tr(L"batch.started").c_str(), L10n::Tr(L"batch.title").c_str(), MB_OK | MB_ICONINFORMATION);
 }
 
 void TareaAnalisisBackground(std::wstring urlStr) {
@@ -2199,7 +2522,7 @@ void TareaAnalisisBackground(std::wstring urlStr) {
 
 void EjecutarAnalisis() {
     if (g_analizando || g_loteEnCurso) {
-        MessageBox(hMainWnd, L"Ya hay un análisis en curso. Espera a que termine.", L"Atención", MB_OK | MB_ICONINFORMATION);
+        MessageBox(hMainWnd, L10n::Tr(L"err.busy").c_str(), L10n::Tr(L"dlg.attention").c_str(), MB_OK | MB_ICONINFORMATION);
         return;
     }
 
@@ -2208,7 +2531,7 @@ void EjecutarAnalisis() {
     std::wstring urlStr = Trim(urlBuf);
 
     if (urlStr.empty()) {
-        MessageBox(hMainWnd, L"Por favor, introduce una dirección URL válida.", L"Atención", MB_OK | MB_ICONWARNING);
+        MessageBox(hMainWnd, L10n::Tr(L"err.net.url").c_str(), L10n::Tr(L"dlg.attention").c_str(), MB_OK | MB_ICONWARNING);
         return;
     }
 
@@ -2327,33 +2650,43 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
         if (!g_tieneResultado) {
             SelectObject(hdc, hFontBold);
             SetTextColor(hdc, RGB(50, 50, 50));
-            TextOut(hdc, 20, 20 + offset, L"Estado: Listo para analizar", lstrlen(L"Estado: Listo para analizar"));
+            std::wstring listo = L10n::Tr(L"status.ready");
+            TextOut(hdc, 20, 20 + offset, listo.c_str(), (int)listo.length());
 
             SelectObject(hdc, hFontBase);
             SetTextColor(hdc, RGB(90, 90, 90));
-            TextOut(hdc, 20, 45 + offset, L"Introduce la dirección de tu página y haz clic en 'Analizar Web'.", 66);
+            std::wstring pista = L10n::Tr(L"status.hint");
+            TextOut(hdc, 20, 45 + offset, pista.c_str(), (int)pista.length());
         } else {
-            wchar_t resStr[256];
-            swprintf_s(resStr, L"Resultado: %d de %d comprobaciones · Nota: %s (%d%% de calidad · %.1f/%.0f puntos)",
-                       g_ultimoResultado.presentes, g_ultimoResultado.aplicables,
-                       g_ultimoResultado.calificacion.c_str(), (int)std::lround(g_ultimoResultado.porcentaje),
-                       g_ultimoResultado.puntos, g_ultimoResultado.puntosMax);
+            std::wstring resStr = L10n::Tr(L"status.summary", {
+                { L"ok", std::to_wstring(g_ultimoResultado.presentes) },
+                { L"total", std::to_wstring(g_ultimoResultado.aplicables) },
+                { L"grade", g_ultimoResultado.calificacion },
+                { L"pct", std::to_wstring((int)std::lround(g_ultimoResultado.porcentaje)) },
+                { L"points", FormatearDecimal(g_ultimoResultado.puntos, 1) },
+                { L"max", FormatearDecimal(g_ultimoResultado.puntosMax, 0) }
+            });
 
             SelectObject(hdc, hFontBold);
             COLORREF colorNota = (g_ultimoResultado.calificacion == L"A+" || g_ultimoResultado.calificacion == L"A")
                 ? RGB(10, 128, 66)
                 : ((g_ultimoResultado.calificacion == L"B" || g_ultimoResultado.calificacion == L"C") ? RGB(253, 126, 20) : RGB(220, 53, 69));
             SetTextColor(hdc, colorNota);
-            TextOut(hdc, 15, 12 + offset, resStr, lstrlen(resStr));
+            TextOut(hdc, 15, 12 + offset, resStr.c_str(), (int)resStr.length());
 
-            wchar_t detStr[512];
-            swprintf_s(detStr, L"Respuesta HTTP: %d %s | Servidor: %s | TLS: %s | Fecha: %s",
-                       g_ultimoResultado.statusCode, g_ultimoResultado.reason.c_str(), g_ultimoResultado.server.c_str(),
-                       g_ultimoResultado.tlsProtocolo.empty() ? L"-" : g_ultimoResultado.tlsProtocolo.c_str(),
-                       g_ultimoResultado.fecha.c_str());
+            std::wstring detStr = L10n::Tr(L"status.http", {
+                { L"status", std::to_wstring(g_ultimoResultado.statusCode) },
+                { L"reason", g_ultimoResultado.reason },
+                { L"server", g_ultimoResultado.server },
+                { L"date", g_ultimoResultado.fecha }
+            });
+            if (!g_ultimoResultado.tlsProtocolo.empty())
+                detStr += L10n::Tr(L"status.tls", { { L"protocol", g_ultimoResultado.tlsProtocolo } });
+            if (!g_ultimoResultado.https)
+                detStr += L10n::Tr(L"status.insecure");
             SelectObject(hdc, hFontBase);
             SetTextColor(hdc, RGB(90, 90, 90));
-            TextOut(hdc, 15, 34 + offset, detStr, lstrlen(detStr));
+            TextOut(hdc, 15, 34 + offset, detStr.c_str(), (int)detStr.length());
 
             int yPos = 65 + offset;
             int cardWidth = rcClient.right - 30;
@@ -2370,7 +2703,7 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                         : RGB(255, 235, 238);
                 }
 
-                std::wstring valStr = (item.clave.empty() ? L"Detalle:  " : L"Valor recibido:  ") + item.valor;
+                std::wstring valStr = L10n::Tr(item.clave.empty() ? L"card.detail" : L"card.value", { { L"value", ValorItem(item) } });
 
                 // Alturas calculadas del texto
                 SelectObject(hdc, hFontConsolas);
@@ -2380,14 +2713,15 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
 
                 SelectObject(hdc, hFontItalic);
                 RECT calcDescRc = { 0, 0, cardWidth - 24, 0 };
-                DrawText(hdc, item.desc.c_str(), -1, &calcDescRc, DT_CALCRECT | DT_WORDBREAK);
+                std::wstring descTexto = DescItem(item);
                 int descHeight = (calcDescRc.bottom - calcDescRc.top) + 4;
 
                 int avisoHeight = 0;
                 RECT calcAvisoRc = { 0, 0, cardWidth - 36, 0 };
-                if (!item.aviso.empty()) {
+                std::wstring avisoTexto = AvisoItem(item);
+                if (!avisoTexto.empty()) {
                     SelectObject(hdc, hFontBase);
-                    std::wstring aviso = L"⚠ Observación: " + item.aviso;
+                    std::wstring aviso = L10n::Tr(L"card.aviso", { { L"text", avisoTexto } });
                     DrawText(hdc, aviso.c_str(), -1, &calcAvisoRc, DT_CALCRECT | DT_WORDBREAK);
                     avisoHeight = (calcAvisoRc.bottom - calcAvisoRc.top) + 12;
                 }
@@ -2418,14 +2752,14 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                 SelectObject(hdc, hFontBold);
                 SetTextColor(hdc, colorEstado);
                 RECT nomRc = { cardRc.left + 32, cardRc.top + 7, cardRc.right - 200, cardRc.top + 27 };
-                DrawText(hdc, item.nombre.c_str(), -1, &nomRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                std::wstring nombreTexto = NombreItem(item);
 
-                std::wstring badgeText = L"Estado: " + estadoTxt + L" | Criticidad: " + item.criticidad;
-                if (item.aplicable && item.peso > 0) {
-                    wchar_t calidadTxt[32];
-                    swprintf_s(calidadTxt, L" | Calidad: %d%%", CalidadItem(item));
-                    badgeText += calidadTxt;
-                }
+                std::wstring badgeText;
+                if (item.aplicable && item.peso > 0)
+                    badgeText = L10n::Tr(L"card.state", { { L"state", estadoTxt }, { L"crit", CritItem(item) },
+                                                           { L"quality", std::to_wstring(CalidadItem(item)) } });
+                else
+                    badgeText = L10n::Tr(L"card.state_simple", { { L"state", estadoTxt }, { L"crit", CritItem(item) } });
                 HFONT hBadgeFont = CrearFuenteSuave(10, FW_BOLD);
                 SelectObject(hdc, hBadgeFont);
 
@@ -2445,7 +2779,7 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                 SelectObject(hdc, hFontItalic);
                 SetTextColor(hdc, RGB(100, 100, 100));
                 RECT descRc = { cardRc.left + 12, cardRc.top + 36, cardRc.right - 12, cardRc.top + 36 + descHeight };
-                DrawText(hdc, item.desc.c_str(), -1, &descRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                DrawText(hdc, descTexto.c_str(), -1, &descRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
                 int yValor = cardRc.top + 36 + descHeight + 2;
                 RECT valBoxRc = { cardRc.left + 12, yValor, cardRc.right - 12, yValor + valBoxHeight };
@@ -2458,7 +2792,7 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                 RECT valTextMargin = { valBoxRc.left + 8, valBoxRc.top + 6, valBoxRc.right - 8, valBoxRc.bottom - 4 };
                 DrawText(hdc, valStr.c_str(), -1, &valTextMargin, DT_LEFT | DT_TOP | DT_WORDBREAK);
 
-                if (!item.aviso.empty()) {
+                if (!avisoTexto.empty()) {
                     int yAviso = yValor + valBoxHeight + 4;
                     RECT avisoBoxRc = { cardRc.left + 12, yAviso, cardRc.right - 12, yAviso + avisoHeight };
                     HBRUSH hAvisoBg = CreateSolidBrush(RGB(255, 244, 214));
@@ -2467,9 +2801,9 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
 
                     SelectObject(hdc, hFontBase);
                     SetTextColor(hdc, RGB(138, 90, 0));
-                    std::wstring aviso = L"⚠ Observación: " + item.aviso;
-                    RECT avisoTexto = { avisoBoxRc.left + 8, avisoBoxRc.top + 4, avisoBoxRc.right - 8, avisoBoxRc.bottom - 2 };
-                    DrawText(hdc, aviso.c_str(), -1, &avisoTexto, DT_LEFT | DT_TOP | DT_WORDBREAK);
+                    std::wstring aviso = L10n::Tr(L"card.aviso", { { L"text", avisoTexto } });
+                    RECT avisoRc = { avisoBoxRc.left + 8, avisoBoxRc.top + 4, avisoBoxRc.right - 8, avisoBoxRc.bottom - 2 };
+                    DrawText(hdc, aviso.c_str(), -1, &avisoRc, DT_LEFT | DT_TOP | DT_WORDBREAK);
                 }
 
                 yPos += cardHeight + 12;
@@ -2489,6 +2823,95 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
+// ----------------------------------------------------------------------------
+// Menús e idioma
+// ----------------------------------------------------------------------------
+HMENU g_menuPrincipal = NULL;
+HMENU g_menuIdioma = NULL;
+std::vector<std::wstring> g_codigosIdioma;
+
+void RellenarMenuExportar() {
+    if (hMenuExportar) DestroyMenu(hMenuExportar);
+    hMenuExportar = CreatePopupMenu();
+    AppendMenu(hMenuExportar, MF_STRING, 1, L10n::Tr(L"form.export.pdf").c_str());
+    AppendMenu(hMenuExportar, MF_STRING, 2, L10n::Tr(L"form.export.json").c_str());
+    AppendMenu(hMenuExportar, MF_STRING, 3, L10n::Tr(L"form.export.csv").c_str());
+    AppendMenu(hMenuExportar, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hMenuExportar, MF_STRING, 4, L10n::Tr(L"menu.help.about").c_str());
+}
+
+void ConstruirMenuIdioma(HWND hwnd) {
+    if (g_menuPrincipal) DestroyMenu(g_menuPrincipal);
+    g_menuPrincipal = CreateMenu();
+    g_menuIdioma = CreatePopupMenu();
+    g_codigosIdioma.clear();
+
+    for (const auto& idioma : L10n::Idiomas()) {
+        AppendMenu(g_menuIdioma, MF_STRING, 2000 + (UINT)g_codigosIdioma.size(), idioma.second.c_str());
+        g_codigosIdioma.push_back(idioma.first);
+    }
+    for (size_t j = 0; j < g_codigosIdioma.size(); ++j) {
+        if (g_codigosIdioma[j] == L10n::g_actual) {
+            CheckMenuRadioItem(g_menuIdioma, 2000, 2000 + (UINT)g_codigosIdioma.size() - 1,
+                               2000 + (UINT)j, MF_BYCOMMAND);
+        }
+    }
+    std::wstring etiqueta = L10n::Tr(L"menu.language");
+    AppendMenu(g_menuPrincipal, MF_POPUP, (UINT_PTR)g_menuIdioma, etiqueta.c_str());
+    SetMenu(hwnd, g_menuPrincipal);
+    DrawMenuBar(hwnd);
+}
+
+void ActualizarTextosUI(HWND hwnd) {
+    SetWindowText(hwnd, L10n::Tr(L"app.title").c_str());
+    SetWindowText(hGrpBox, L10n::Tr(L"form.title").c_str());
+    SetWindowText(hLblUrl, L10n::Tr(L"form.url").c_str());
+
+    std::wstring textoAnalizar = g_analizando
+        ? L10n::Tr(L"form.analyzing")
+        : (L"🔍 " + L10n::Tr(L"form.analyze"));
+    SetWindowText(hBtnAnalizar, textoAnalizar.c_str());
+    SetWindowText(hBtnLotes, (L"📂 " + L10n::Tr(L"form.batch")).c_str());
+    SetWindowText(hBtnExportar, (L"💾 " + L10n::Tr(L"form.export") + L" ▾").c_str());
+
+    std::wstring tab1 = L"📊 " + L10n::Tr(L"tab.report");
+    std::wstring tab2 = L"📜 " + L10n::Tr(L"tab.history");
+    TCITEM tie = { 0 };
+    tie.mask = TCIF_TEXT;
+    tie.pszText = (LPWSTR)tab1.c_str();
+    TabCtrl_SetItem(hTabControl, 0, &tie);
+    tie.pszText = (LPWSTR)tab2.c_str();
+    TabCtrl_SetItem(hTabControl, 1, &tie);
+
+    std::wstring col0 = L10n::Tr(L"hist.date");
+    std::wstring col1 = L10n::Tr(L"hist.url");
+    std::wstring col2 = L10n::Tr(L"hist.status");
+    std::wstring col3 = L10n::Tr(L"hist.grade");
+    LVCOLUMN col = { 0 };
+    col.mask = LVCF_TEXT;
+    col.pszText = (LPWSTR)col0.c_str(); ListView_SetColumn(hHistTree, 0, &col);
+    col.pszText = (LPWSTR)col1.c_str(); ListView_SetColumn(hHistTree, 1, &col);
+    col.pszText = (LPWSTR)col2.c_str(); ListView_SetColumn(hHistTree, 2, &col);
+    col.pszText = (LPWSTR)col3.c_str(); ListView_SetColumn(hHistTree, 3, &col);
+
+    SetWindowText(hBtnBorrarItem, (L"🗑️ " + L10n::Tr(L"hist.delete")).c_str());
+    SetWindowText(hBtnLimpiarTodo, (L"🧹 " + L10n::Tr(L"hist.clear")).c_str());
+    SetWindowText(hBtnRestaurar, (L"♻️ " + L10n::Tr(L"hist.restore")).c_str());
+
+    RellenarMenuExportar();
+}
+
+void CambiarIdioma(HWND hwnd, const std::wstring& codigo) {
+    L10n::Aplicar(codigo);
+    L10n::Guardar(L10n::g_actual);
+    ConstruirMenuIdioma(hwnd);
+    ActualizarTextosUI(hwnd);
+    CargarHistorialEnTabla();
+    g_irAlPrincipio = true;
+    InvalidateRect(hwnd, NULL, TRUE);
+    InvalidateRect(hPanelInformeScroll, NULL, TRUE);
+}
+
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
     case WM_CREATE: {
@@ -2503,40 +2926,34 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         INITCOMMONCONTROLSEX icex = { sizeof(INITCOMMONCONTROLSEX), ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES };
         InitCommonControlsEx(&icex);
 
-        hGrpBox = CreateWindow(L"BUTTON", L"Formulario de Análisis", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 15, 65, 960, 60, hwnd, NULL, NULL, NULL);
+        hGrpBox = CreateWindow(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 15, 65, 960, 60, hwnd, NULL, NULL, NULL);
         SendMessage(hGrpBox, WM_SETFONT, (WPARAM)hFontBase, TRUE);
 
-        hLblUrl = CreateWindow(L"STATIC", L"Dirección URL de la web:", WS_CHILD | WS_VISIBLE, 28, 88, 160, 20, hwnd, NULL, NULL, NULL);
+        hLblUrl = CreateWindow(L"STATIC", L"", WS_CHILD | WS_VISIBLE, 28, 88, 160, 20, hwnd, NULL, NULL, NULL);
         SendMessage(hLblUrl, WM_SETFONT, (WPARAM)hFontBase, TRUE);
 
         hEditUrl = CreateWindow(L"EDIT", g_urlInicial.empty() ? L"" : g_urlInicial.c_str(), WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 190, 85, 380, 24, hwnd, (HMENU)IDC_URL_ENTRY, NULL, NULL);
         SendMessage(hEditUrl, WM_SETFONT, (WPARAM)hFontBase, TRUE);
         SendMessage(hEditUrl, EM_SETLIMITTEXT, 1000, 0);
 
-        hBtnAnalizar = CreateWindow(L"BUTTON", L"🔍 Analizar Web", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 580, 84, 115, 26, hwnd, (HMENU)IDC_BTN_ANALIZAR, NULL, NULL);
+        hBtnAnalizar = CreateWindow(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 580, 84, 115, 26, hwnd, (HMENU)IDC_BTN_ANALIZAR, NULL, NULL);
         SendMessage(hBtnAnalizar, WM_SETFONT, (WPARAM)hFontBold, TRUE);
 
-        hBtnLotes = CreateWindow(L"BUTTON", L"📂 Lotes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 705, 84, 85, 26, hwnd, (HMENU)IDC_BTN_LOTES, NULL, NULL);
+        hBtnLotes = CreateWindow(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 705, 84, 85, 26, hwnd, (HMENU)IDC_BTN_LOTES, NULL, NULL);
         SendMessage(hBtnLotes, WM_SETFONT, (WPARAM)hFontBase, TRUE);
 
-        hBtnExportar = CreateWindow(L"BUTTON", L"💾 Exportar ▾", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED, 800, 84, 115, 26, hwnd, (HMENU)IDC_BTN_EXPORTAR, NULL, NULL);
+        hBtnExportar = CreateWindow(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED, 800, 84, 115, 26, hwnd, (HMENU)IDC_BTN_EXPORTAR, NULL, NULL);
         SendMessage(hBtnExportar, WM_SETFONT, (WPARAM)hFontBase, TRUE);
 
-        hMenuExportar = CreatePopupMenu();
-        AppendMenu(hMenuExportar, MF_STRING, 1, L"Exportar como PDF");
-        AppendMenu(hMenuExportar, MF_STRING, 2, L"Exportar como JSON");
-        AppendMenu(hMenuExportar, MF_STRING, 3, L"Exportar como CSV");
-        AppendMenu(hMenuExportar, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hMenuExportar, MF_STRING, 4, L"Acerca de...");
+        RellenarMenuExportar();
 
         hTabControl = CreateWindow(WC_TABCONTROL, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 15, 135, 960, 550, hwnd, (HMENU)IDC_TAB_CONTROL, NULL, NULL);
         SendMessage(hTabControl, WM_SETFONT, (WPARAM)hFontBase, TRUE);
 
         TCITEM tie = { 0 };
         tie.mask = TCIF_TEXT;
-        tie.pszText = (LPWSTR)L"📊 Informe del Análisis";
+        tie.pszText = (LPWSTR)L"";
         TabCtrl_InsertItem(hTabControl, 0, &tie);
-        tie.pszText = (LPWSTR)L"📜 Historial de Registros";
         TabCtrl_InsertItem(hTabControl, 1, &tie);
 
         WNDCLASS wcPanel = { 0 };
@@ -2554,23 +2971,23 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         LVCOLUMN lvc = { 0 };
         lvc.mask = LVCF_TEXT | LVCF_WIDTH;
-        lvc.cx = 160; lvc.pszText = (LPWSTR)L"Fecha / Hora";
-        ListView_InsertColumn(hHistTree, 0, &lvc);
-        lvc.cx = 400; lvc.pszText = (LPWSTR)L"Dirección URL Analizada";
-        ListView_InsertColumn(hHistTree, 1, &lvc);
-        lvc.cx = 140; lvc.pszText = (LPWSTR)L"Código HTTP";
-        ListView_InsertColumn(hHistTree, 2, &lvc);
-        lvc.cx = 190; lvc.pszText = (LPWSTR)L"Nota de Seguridad";
-        ListView_InsertColumn(hHistTree, 3, &lvc);
+        lvc.pszText = (LPWSTR)L"";
+        lvc.cx = 160; ListView_InsertColumn(hHistTree, 0, &lvc);
+        lvc.cx = 400; ListView_InsertColumn(hHistTree, 1, &lvc);
+        lvc.cx = 140; ListView_InsertColumn(hHistTree, 2, &lvc);
+        lvc.cx = 190; ListView_InsertColumn(hHistTree, 3, &lvc);
 
-        hBtnBorrarItem = CreateWindow(L"BUTTON", L"🗑️ Borrar Seleccionado", WS_CHILD, 20, 642, 175, 28, hwnd, (HMENU)IDC_BTN_BORRAR_ITEM, NULL, NULL);
+        hBtnBorrarItem = CreateWindow(L"BUTTON", L"", WS_CHILD, 20, 642, 175, 28, hwnd, (HMENU)IDC_BTN_BORRAR_ITEM, NULL, NULL);
         SendMessage(hBtnBorrarItem, WM_SETFONT, (WPARAM)hFontBase, TRUE);
 
-        hBtnLimpiarTodo = CreateWindow(L"BUTTON", L"🧹 Limpiar Todo", WS_CHILD, 205, 642, 160, 28, hwnd, (HMENU)IDC_BTN_LIMPIAR_TODO, NULL, NULL);
+        hBtnLimpiarTodo = CreateWindow(L"BUTTON", L"", WS_CHILD, 205, 642, 160, 28, hwnd, (HMENU)IDC_BTN_LIMPIAR_TODO, NULL, NULL);
         SendMessage(hBtnLimpiarTodo, WM_SETFONT, (WPARAM)hFontBase, TRUE);
 
-        hBtnRestaurar = CreateWindow(L"BUTTON", L"♻️ Restaurar Copia", WS_CHILD, 375, 642, 170, 28, hwnd, (HMENU)IDC_BTN_RESTAURAR, NULL, NULL);
+        hBtnRestaurar = CreateWindow(L"BUTTON", L"", WS_CHILD, 375, 642, 170, 28, hwnd, (HMENU)IDC_BTN_RESTAURAR, NULL, NULL);
         SendMessage(hBtnRestaurar, WM_SETFONT, (WPARAM)hFontBase, TRUE);
+
+        ActualizarTextosUI(hwnd);
+        ConstruirMenuIdioma(hwnd);
 
         CargarHistorialEnTabla();
         return 0;
@@ -2591,7 +3008,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         EnableWindow(hBtnExportar, TRUE);
         EnableWindow(hBtnAnalizar, TRUE);
         EnableWindow(hBtnLotes, TRUE);
-        SetWindowText(hBtnAnalizar, L"🔍 Analizar Web");
+        ActualizarTextosUI(hwnd);
         g_irAlPrincipio = true;
         InvalidateRect(hPanelInformeScroll, NULL, TRUE);
         return 0;
@@ -2602,8 +3019,9 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         g_analizando = false;
         EnableWindow(hBtnAnalizar, TRUE);
         EnableWindow(hBtnLotes, TRUE);
-        SetWindowText(hBtnAnalizar, L"🔍 Analizar Web");
-        MessageBox(hwnd, mensaje ? mensaje->c_str() : L"No se pudo completar la auditoría.", L"Error de Análisis", MB_OK | MB_ICONERROR);
+        ActualizarTextosUI(hwnd);
+        MessageBox(hwnd, mensaje ? mensaje->c_str() : L10n::Tr(L"err.generic").c_str(),
+                   L10n::Tr(L"err.connection_title").c_str(), MB_OK | MB_ICONERROR);
         delete mensaje;
         return 0;
     }
@@ -2636,24 +3054,22 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 InvalidateRect(hPanelInformeScroll, NULL, TRUE);
             }
 
-            std::wstring resumen;
-            wchar_t buf[256];
-            swprintf_s(buf, L"Se auditaron correctamente %zu de %zu URLs.",
-                       paquete->first.size(), paquete->first.size() + paquete->second.size());
-            resumen = buf;
-            resumen += L"\nLos resultados se han añadido al historial.";
+            std::wstring resumen = L10n::Tr(
+                paquete->first.empty() ? L"batch.none" : L"batch.finished",
+                { { L"ok", std::to_wstring(paquete->first.size()) },
+                  { L"total", std::to_wstring(paquete->first.size() + paquete->second.size()) } });
 
             if (!paquete->second.empty()) {
-                resumen += L"\n\nFallos detectados:";
+                resumen += L"\n\n" + L10n::Tr(L"batch.failures");
                 size_t mostrados = 0;
                 for (const auto& fallo : paquete->second) {
-                    if (mostrados++ >= 8) { resumen += L"\n..."; break; }
+                    if (mostrados++ >= 8) { resumen += L"\n" + L10n::Tr(L"batch.more", { { L"count", std::to_wstring(paquete->second.size() - 8) } }); break; }
                     resumen += L"\n- " + fallo.first + L": " + fallo.second;
                 }
             }
 
             MessageBox(hwnd, resumen.c_str(),
-                       paquete->first.empty() ? L"Lotes" : L"Lotes Finalizado",
+                       L10n::Tr(paquete->first.empty() ? L"form.batch" : L"batch.finished_title").c_str(),
                        MB_OK | (paquete->first.empty() ? MB_ICONERROR : MB_ICONINFORMATION));
             delete paquete;
         }
@@ -2709,12 +3125,14 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         SelectObject(hdc, hFontHeader);
         SetTextColor(hdc, RGB(255, 255, 255));
         RECT textRc = { 62, 8, rcWindow.right - 20, 28 };
-        DrawText(hdc, L"Auditor de Cabeceras y Seguridad Web", -1, &textRc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        std::wstring tituloVentana = L10n::Tr(L"app.title");
+        DrawText(hdc, tituloVentana.c_str(), -1, &textRc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
 
         SelectObject(hdc, hFontSubHeader);
         SetTextColor(hdc, RGB(215, 225, 245));
         RECT subTextRc = { 62, 32, rcWindow.right - 20, 50 };
-        DrawText(hdc, L"Análisis avanzado de vulnerabilidades HTTP y diagnóstico OWASP", -1, &subTextRc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+        std::wstring subtituloVentana = L10n::Tr(L"app.subtitle");
+        DrawText(hdc, subtituloVentana.c_str(), -1, &subTextRc, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
 
         // Copyright del autor (clic para ver "Acerca de")
         std::wstring credito = std::wstring(COPYRIGHT) + L" · " + CORREO;
@@ -2760,6 +3178,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             LimpiarTodoHistorial();
         } else if (wmId == IDC_BTN_RESTAURAR) {
             RestaurarCopiaHistorial();
+        } else if (wmId >= 2000 && wmId < 2000 + (int)g_codigosIdioma.size()) {
+            CambiarIdioma(hwnd, g_codigosIdioma[wmId - 2000]);
         }
         return 0;
     }
@@ -2802,6 +3222,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
     case WM_DESTROY:
         if (hMenuExportar) DestroyMenu(hMenuExportar);
+        if (g_menuPrincipal) DestroyMenu(g_menuPrincipal);
         PostQuitMessage(0);
         return 0;
     }
@@ -2881,6 +3302,9 @@ int ModoConsolaPdf(const std::wstring& urlEntrada, const std::wstring& rutaSalid
 // 15. PUNTO DE ENTRADA PRINCIPAL (WinMain)
 // ============================================================================
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Idioma guardado -> idioma del sistema -> inglés (también para los modos de consola)
+    L10n::Aplicar(L10n::ResolverInicio());
+
     // Modo consola para pruebas/automatización: auditor.exe --json <url>
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
