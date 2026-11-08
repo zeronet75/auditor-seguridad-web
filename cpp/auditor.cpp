@@ -74,7 +74,7 @@ const wchar_t DEFAULT_URL[] = L"";   // Sin web por defecto: el usuario introduc
 const wchar_t AUTOR[] = L"Juan Ramon Martin";
 const wchar_t CORREO[] = L"zeronet75@gmail.com";
 const wchar_t COPYRIGHT[] = L"© 2026 Juan Ramon Martin";
-const wchar_t VERSION_APP[] = L"4.1";
+const wchar_t VERSION_APP[] = L"4.1.1";
 
 // ============================================================================
 // 2. ESTRUCTURAS DE DATOS

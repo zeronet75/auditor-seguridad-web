@@ -70,7 +70,7 @@ NOMBRE_CORE = "auditor_core.exe"
 # Datos de autoría (se muestran en la interfaz y en los informes exportados).
 AUTOR = "Juan Ramon Martin"
 CORREO = "zeronet75@gmail.com"
-VERSION_APP = "4.1"
+VERSION_APP = "4.1.1"
 COPYRIGHT = "© 2026 Juan Ramon Martin"
 
 # Pesos de respaldo para registros antiguos, que no guardaban el campo "peso".
