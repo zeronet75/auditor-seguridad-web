@@ -2714,6 +2714,7 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                 SelectObject(hdc, hFontItalic);
                 RECT calcDescRc = { 0, 0, cardWidth - 24, 0 };
                 std::wstring descTexto = DescItem(item);
+                DrawText(hdc, descTexto.c_str(), -1, &calcDescRc, DT_CALCRECT | DT_WORDBREAK);
                 int descHeight = (calcDescRc.bottom - calcDescRc.top) + 4;
 
                 int avisoHeight = 0;
@@ -2749,11 +2750,6 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                 RECT checkRc = { cardRc.left + 10, cardRc.top + 7, cardRc.left + 26, cardRc.top + 23 };
                 DibujarIconoEstado(hdc, checkRc, colorEstado, item);
 
-                SelectObject(hdc, hFontBold);
-                SetTextColor(hdc, colorEstado);
-                RECT nomRc = { cardRc.left + 32, cardRc.top + 7, cardRc.right - 200, cardRc.top + 27 };
-                std::wstring nombreTexto = NombreItem(item);
-
                 std::wstring badgeText;
                 if (item.aplicable && item.peso > 0)
                     badgeText = L10n::Tr(L"card.state", { { L"state", estadoTxt }, { L"crit", CritItem(item) },
@@ -2775,6 +2771,14 @@ LRESULT CALLBACK InformeScrollPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
                 SetTextColor(hdc, RGB(255, 255, 255));
                 DrawText(hdc, badgeText.c_str(), -1, &badgeRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 DeleteObject(hBadgeFont);
+
+                SelectObject(hdc, hFontBold);
+                SetTextColor(hdc, colorEstado);
+                std::wstring nombreTexto = NombreItem(item);
+                int nomDerecha = (std::max)((int)cardRc.left + 60, (int)badgeRc.left - 8);
+                RECT nomRc = { cardRc.left + 32, cardRc.top + 7, nomDerecha, cardRc.top + 27 };
+                DrawText(hdc, nombreTexto.c_str(), -1, &nomRc,
+                         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
                 SelectObject(hdc, hFontItalic);
                 SetTextColor(hdc, RGB(100, 100, 100));
